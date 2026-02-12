@@ -149,35 +149,34 @@ QTreeWidgetItem* TrafficMonitorPage::addTreeItem(QTreeWidgetItem *parent, const 
 
 void TrafficMonitorPage::addPacket(const ParsedPacket& packet) {
     if (isPaused) return;
+
     QString filter = searchBox->text();
     if (!filter.isEmpty()) {
-        QString content = packet.getSrcStr() + packet.getDstStr() + QString(packet.protocol) + packet.getSummary();
+        QString content = packet.getSrcStr() + packet.getDstStr() + QString(packet.protocol);
         if (!content.contains(filter, Qt::CaseInsensitive)) return;
     }
-    if (pendingPackets.size() < 5000) {
+
+    if (pendingPackets.size() < 5000)
         pendingPackets.push_back(packet);
-    }
 }
 
 void TrafficMonitorPage::processPendingPackets() {
     if (pendingPackets.empty()) return;
     if (!table || !chkAutoScroll || !chkCollapse) return;
 
-    const int BATCH_PROCESS_LIMIT = 200;
+    table->setUpdatesEnabled(false);
+    table->setSortingEnabled(false);
 
     QString filterText = searchBox->text();
     QString filterProto = comboProtocol->currentText();
     bool hasProtoFilter = (filterProto != "全部协议");
 
-    table->setUpdatesEnabled(false);
-    table->setSortingEnabled(false);
-
     int processedCount = 0;
+    const int BATCH_PROCESS_LIMIT = 200;
 
     while (processedCount < BATCH_PROCESS_LIMIT && !pendingPackets.empty()) {
-        // 1. 取出头部数据
         ParsedPacket packet = pendingPackets.front();
-        pendingPackets.pop_front(); // O(1) 操作，性能极大提升
+        pendingPackets.pop_front();
         processedCount++;
 
         bool match = true;
@@ -186,7 +185,8 @@ void TrafficMonitorPage::processPendingPackets() {
         }
 
         if (match && !filterText.isEmpty()) {
-            QString content = packet.getSrcStr() + packet.getDstStr() + QString(packet.protocol) + packet.getSummary();
+            QString content = packet.getSrcStr() + packet.getDstStr() +
+                             QString(packet.protocol) + packet.getSummary();
             if (!content.contains(filterText, Qt::CaseInsensitive)) match = false;
         }
 
@@ -195,10 +195,13 @@ void TrafficMonitorPage::processPendingPackets() {
         bool merged = false;
         if (chkCollapse->isChecked() && !packetBuffer.empty()) {
             ParsedPacket& last = packetBuffer.back();
-            if (last.srcIp == packet.srcIp && last.dstIp == packet.dstIp && strcmp(last.protocol, packet.protocol) == 0) {
+            if (last.srcIp == packet.srcIp && last.dstIp == packet.dstIp &&
+                std::strcmp(last.protocol, packet.protocol) == 0) {
+
                 merged = true;
                 lastRowRepeatCount++;
                 last = packet;
+
                 int lastRow = table->rowCount() - 1;
                 if (lastRow >= 0) {
                     QDateTime time = QDateTime::fromMSecsSinceEpoch(packet.timestamp);
@@ -210,11 +213,16 @@ void TrafficMonitorPage::processPendingPackets() {
 
         if (!merged) {
             lastRowRepeatCount = 1;
+
             if (packetBuffer.size() >= MAX_BUFFER_SIZE) {
                 packetBuffer.erase(packetBuffer.begin());
                 if (table->rowCount() > 0) table->removeRow(0);
             }
             packetBuffer.push_back(packet);
+
+            if (table->rowCount() >= MAX_UI_ROWS) {
+                table->removeRow(0);
+            }
 
             int row = table->rowCount();
             table->insertRow(row);
@@ -243,6 +251,7 @@ void TrafficMonitorPage::processPendingPackets() {
     if (chkAutoScroll->isChecked()) {
         table->scrollToBottom();
     }
+
     table->setUpdatesEnabled(true);
 }
 

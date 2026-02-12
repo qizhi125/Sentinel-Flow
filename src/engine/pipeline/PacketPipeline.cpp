@@ -47,10 +47,12 @@ void PacketPipeline::run() {
             auto rawOpt = inputQueue->tryPop();
 
             if (!rawOpt) {
-                if (!packetBatch.isEmpty() && timer.elapsed() > UI_REFRESH_INTERVAL_MS) {
+                bool hasPending = !packetBatch.isEmpty();
+                bool shouldFlush = hasPending && (timer.elapsed() > 50);
+
+                if (shouldFlush) {
                     emit packetsProcessed(packetBatch);
-                    packetBatch.clear();
-                    packetBatch.reserve(UI_BATCH_SIZE * 2);
+                    packetBatch.clear(); // 清空，但保留 capacity
 
                     if (bytesAccumulator > 0) {
                         emit statsUpdated(bytesAccumulator);
@@ -58,7 +60,7 @@ void PacketPipeline::run() {
                     }
                     timer.restart();
                 }
-                QThread::msleep(5);
+                QThread::msleep(10);
                 continue;
             }
 
@@ -79,13 +81,14 @@ void PacketPipeline::run() {
 
             packetBatch.append(parsed);
 
+            bool batchFull = packetBatch.size() >= UI_BATCH_SIZE;
             bool timeUp = timer.elapsed() > UI_REFRESH_INTERVAL_MS;
-            bool emergencyDump = packetBatch.size() >= 5000;
 
-            if ((timeUp && !packetBatch.isEmpty()) || emergencyDump) {
-                emit packetsProcessed(packetBatch);
-                packetBatch.clear();
-                packetBatch.reserve(UI_BATCH_SIZE * 2);
+            if (batchFull || timeUp) {
+                if (!packetBatch.isEmpty()) {
+                    emit packetsProcessed(packetBatch);
+                    packetBatch.clear();
+                }
 
                 if (bytesAccumulator > 0) {
                     emit statsUpdated(bytesAccumulator);

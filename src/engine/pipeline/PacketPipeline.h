@@ -8,7 +8,7 @@
 #include "common/queues/ThreadSafeQueue.h"
 
 #define UI_BATCH_SIZE 2000
-#define UI_REFRESH_INTERVAL_MS 200
+#define UI_REFRESH_INTERVAL_MS 500
 
 class PacketPipeline : public QThread {
     Q_OBJECT
@@ -22,11 +22,9 @@ public:
     void startPipeline();
     void stopPipeline();
 
-    signals:
-        void packetsProcessed(const QVector<ParsedPacket>& packets);
-
+signals:
+    void packetsProcessed(const QVector<ParsedPacket>& packets);
     void threatDetected(const Alert& alert, const ParsedPacket& packet);
-
     void statsUpdated(uint64_t bytesProcessed);
 
 protected:

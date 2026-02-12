@@ -49,6 +49,7 @@ private:
     bool isPaused = false;
 
     const size_t MAX_BUFFER_SIZE = 10000;
+    const int MAX_UI_ROWS = 500;
     int m_localSeq = 0;
     int lastRowRepeatCount = 1;
 };
