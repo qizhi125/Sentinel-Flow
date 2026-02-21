@@ -24,36 +24,35 @@ std::optional<ParsedPacket> PacketParser::parse(const RawPacket& raw) {
 
     const uint8_t* data = raw.block->data;
     uint32_t length = raw.block->size;
+    uint32_t offset = raw.linkLayerOffset;
+
+    if (length < offset + 20) return std::nullopt;
 
     ParsedPacket pkt;
     static uint64_t globalId = 0;
     pkt.id = ++globalId;
-
     pkt.timestamp = raw.kernelTimestampNs / 1000000;
-
+    pkt.block = raw.block;
     pkt.totalLen = length;
 
-    std::memcpy(pkt.dstMac.data(), data, 6);
-    std::memcpy(pkt.srcMac.data(), data + 6, 6);
+    if (offset >= 14) {
+        std::memcpy(pkt.dstMac.data(), data, 6);
+        std::memcpy(pkt.srcMac.data(), data + 6, 6);
+    }
 
-    uint16_t etherType = (data[12] << 8) | data[13];
-
-    if (etherType != 0x0800) {
-        copyStr(pkt.protocol, "ETH", sizeof(pkt.protocol));
+    if ((data[offset] >> 4) != 4) {
+        copyStr(pkt.protocol, "NON-IP", sizeof(pkt.protocol));
         return pkt;
     }
 
-    if (length < 34) return std::nullopt;
-
-    // 解析 IP 头
-    const struct iphdr* ipHeader = (struct iphdr*)(data + 14);
+    const struct iphdr* ipHeader = (struct iphdr*)(data + offset);
 
     pkt.srcIp = ntohl(ipHeader->saddr);
     pkt.dstIp = ntohl(ipHeader->daddr);
     pkt.ttl = ipHeader->ttl;
 
     size_t ipHeaderLen = ipHeader->ihl * 4;
-    size_t protocolOffset = 14 + ipHeaderLen;
+    size_t protocolOffset = offset + ipHeaderLen;
 
     if (ipHeader->protocol == IPPROTO_TCP) {
         copyStr(pkt.protocol, "TCP", sizeof(pkt.protocol));
@@ -63,7 +62,6 @@ std::optional<ParsedPacket> PacketParser::parse(const RawPacket& raw) {
         pkt.srcPort = ntohs(tcpHeader->source);
         pkt.dstPort = ntohs(tcpHeader->dest);
 
-        // Flags 简单处理 (也可以优化为 bitmap)
         if (tcpHeader->syn) pkt.tcpFlags += "SYN ";
         if (tcpHeader->ack) pkt.tcpFlags += "ACK ";
         if (tcpHeader->fin) pkt.tcpFlags += "FIN ";
@@ -79,7 +77,6 @@ std::optional<ParsedPacket> PacketParser::parse(const RawPacket& raw) {
             pkt.payloadSize = pkt.length;
         }
 
-        // 端口识别
         if (pkt.srcPort == 80 || pkt.dstPort == 80) {
             if (ENABLE_HTTP) copyStr(pkt.protocol, "HTTP", sizeof(pkt.protocol));
         } else if (pkt.srcPort == 443 || pkt.dstPort == 443) {

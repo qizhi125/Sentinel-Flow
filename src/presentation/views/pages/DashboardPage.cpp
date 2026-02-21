@@ -1,5 +1,6 @@
 #include "presentation/views/pages/DashboardPage.h"
 #include "presentation/views/styles/DashboardStyle.h"
+#include "engine/governance/AuditLogger.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -11,6 +12,19 @@
 #include <sys/statvfs.h>
 #include <QCryptographicHash>
 #include <QtMath>
+
+DashboardPage::DashboardPage(QWidget *parent) : QWidget(parent) {
+    setupUi();
+    AuditLogger::instance().addCallback([this](const std::string& msg, const std::string& type){
+        QMetaObject::invokeMethod(this, "addSystemLog", Qt::QueuedConnection,
+                                  Q_ARG(QString, QString::fromStdString(msg)),
+                                  Q_ARG(QString, QString::fromStdString(type)));
+    });
+
+    monitorTimer = new QTimer(this);
+    connect(monitorTimer, &QTimer::timeout, this, &DashboardPage::updateSystemMetrics);
+    monitorTimer->start(2000);
+}
 
 RadarWidget::RadarWidget(QWidget *parent) : QWidget(parent) {
     setMinimumSize(300, 300);
@@ -69,13 +83,6 @@ void RadarWidget::paintEvent(QPaintEvent *) {
         p.setBrush(c); p.setPen(Qt::NoPen);
         p.drawEllipse(QPoint(x, y), 8, 8);
     }
-}
-
-DashboardPage::DashboardPage(QWidget *parent) : QWidget(parent) {
-    setupUi();
-    monitorTimer = new QTimer(this);
-    connect(monitorTimer, &QTimer::timeout, this, &DashboardPage::updateSystemMetrics);
-    monitorTimer->start(2000);
 }
 
 void DashboardPage::setupUi() {
@@ -181,13 +188,26 @@ void DashboardPage::setupUi() {
 void DashboardPage::addSystemLog(const QString& message, const QString& type) {
     QString timeStr = QTime::currentTime().toString("HH:mm:ss");
     QString fullMsg = QString("[%1] %2").arg(timeStr, message);
+
     auto *item = new QListWidgetItem(fullMsg);
-    if (type == "ALERT") item->setForeground(QColor(DashboardStyle::ColorDanger));
-    else if (type == "WARN") item->setForeground(QColor(DashboardStyle::ColorWarning));
-    else if (type == "SUCCESS") item->setForeground(QColor(DashboardStyle::ColorSafe));
+
+    if (type == "ALERT") {
+        item->setForeground(QColor(DashboardStyle::ColorDanger));
+    } else if (type == "WARN") {
+        item->setForeground(QColor(DashboardStyle::ColorWarning));
+    } else if (type == "SUCCESS") {
+        item->setForeground(QColor(DashboardStyle::ColorSafe));
+    } else {
+        item->setForeground(palette().color(QPalette::Text));
+    }
+
     activityList->addItem(item);
+
     activityList->scrollToBottom();
-    if (activityList->count() > 50) delete activityList->takeItem(0);
+
+    if (activityList->count() > 50) {
+        delete activityList->takeItem(0);
+    }
 }
 
 void DashboardPage::updateSecurityStatus(int totalAlerts, int activeModules) {

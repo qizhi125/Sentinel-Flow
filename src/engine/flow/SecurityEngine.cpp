@@ -1,3 +1,5 @@
+#include "engine/context/ForensicManager.h"
+#include "engine/governance/AuditLogger.h"
 #include "SecurityEngine.h"
 #include <iostream>
 #include <regex>
@@ -51,37 +53,37 @@ std::optional<Alert> SecurityEngine::inspect(const ParsedPacket& packet) {
         std::lock_guard<std::mutex> lock(rulesMutex);
         if (packet.payloadData.empty()) return std::nullopt;
 
-        // 简单载荷转 string (仍需优化，但已比之前好)
         std::string payloadStr(packet.payloadData.begin(), packet.payloadData.end());
 
         for (const auto& rule : rules) {
             if (!rule.enabled) continue;
-            // 简单的协议匹配
             if (rule.protocol != "ANY" && rule.protocol != packet.protocol) continue;
 
             if (payloadStr.find(rule.pattern) != std::string::npos) {
-                return Alert{
-                    static_cast<uint64_t>(time(nullptr)),
-                    rule.level,
-                    packet.srcIp,
-                    rule.description,
-                    "Rule-" + std::to_string(rule.id)
-                };
+                Alert alert = { static_cast<uint64_t>(time(nullptr)), rule.level, packet.srcIp, rule.description, "Rule-" + std::to_string(rule.id) };
+
+                if (alert.level >= Alert::High) {
+                    std::string filename = "evidence_id_" + std::to_string(packet.id) + ".pcap";
+                    if (ForensicManager::instance().saveToPcap(packet, filename)) {
+                        AuditLogger::instance().log("取证成功: 原始报文已导出至 " + filename, "SUCCESS");
+                    }
+                }
+                return alert;
             }
         }
     }
 
-    // 3. 内置规则示例
+    // 3. 内置规则示例优化
     if (strcmp(packet.protocol, "HTTP") == 0) {
         std::string payloadStr(packet.payloadData.begin(), packet.payloadData.end());
-        if (payloadStr.find("Union Select") != std::string::npos) {
-            return Alert{
-                static_cast<uint64_t>(time(nullptr)),
-                Alert::High,
-                packet.srcIp,
-                "SQL Injection Attempt",
-                "SQL_INJECTION_CORE"
-            };
+        if (payloadStr.find("UNION SELECT") != std::string::npos) {
+            Alert sqlAlert = { static_cast<uint64_t>(time(nullptr)), Alert::High, packet.srcIp, "SQL Injection Attempt", "SQL_INJECTION_CORE" };
+
+            std::string filename = "evidence_sql_" + std::to_string(packet.id) + ".pcap";
+            ForensicManager::instance().saveToPcap(packet, filename);
+            AuditLogger::instance().log("检测到 SQL 注入，已触发自动取证: " + filename, "ALERT");
+
+            return sqlAlert;
         }
     }
 

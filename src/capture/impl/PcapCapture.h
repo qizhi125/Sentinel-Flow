@@ -33,8 +33,7 @@ private:
     PcapCapture() = default;
     ~PcapCapture();
 
-    // 简单的 IP Hash 分流算法
-    int hashPacket(const uint8_t* data, int len);
+    int hashPacket(const uint8_t* data, int len, uint32_t offset);
 
     void captureLoop();
 

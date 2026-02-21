@@ -42,16 +42,13 @@ void PcapCapture::stop() {
     }
 }
 
-// 🔥 简单高效的 IP Hash 分流
-int PcapCapture::hashPacket(const uint8_t* data, int len) {
-    if (len < 34) return 0; // 还没到 IP 头
+// IP Hash 分流
+int PcapCapture::hashPacket(const uint8_t* data, int len, uint32_t offset) {
+    if (len < static_cast<int>(offset + 20)) return 0;
 
-    // 假设是 Ethernet II 帧，IPv4 头偏移 14
-    // 只有 IPv4 (0x0800) 才做 Hash
-    if (data[12] == 0x08 && data[13] == 0x00) {
-        // SrcIP (offset 26), DstIP (offset 30)
-        uint32_t srcIp = (data[26] << 24) | (data[27] << 16) | (data[28] << 8) | data[29];
-        uint32_t dstIp = (data[30] << 24) | (data[31] << 16) | (data[32] << 8) | data[33];
+    if ((data[offset] >> 4) == 4) {
+        uint32_t srcIp = (data[offset + 12] << 24) | (data[offset + 13] << 16) | (data[offset + 14] << 8) | data[offset + 15];
+        uint32_t dstIp = (data[offset + 16] << 24) | (data[offset + 17] << 16) | (data[offset + 18] << 8) | data[offset + 19];
         return (srcIp + dstIp) % queueCount;
     }
 
@@ -67,10 +64,19 @@ void PcapCapture::captureLoop() {
         return;
     }
 
-    std::cout << "✅ [PcapCapture] 内核态监听启动: " << currentDevice << " | Workers: " << queueCount << std::endl;
+    int dlt = pcap_datalink(handle);
+    uint32_t linkOffset = 14;
+    if (dlt == DLT_LINUX_SLL) {
+        linkOffset = 16;
+    } else if (dlt == DLT_NULL) {
+        linkOffset = 4;
+    }
+
+    std::cout << "✅ [PcapCapture] 内核态监听启动: " << currentDevice
+              << " | DLT: " << dlt << " (Offset: " << linkOffset << "B)"
+              << " | Workers: " << queueCount << std::endl;
 
     PacketPool::instance();
-
     struct pcap_pkthdr* header;
     const u_char* pkt_data;
 
@@ -81,6 +87,7 @@ void PcapCapture::captureLoop() {
 
         RawPacket raw;
         raw.kernelTimestampNs = (int64_t)header->ts.tv_sec * 1000000000L + (int64_t)header->ts.tv_usec * 1000L;
+        raw.linkLayerOffset = linkOffset;
 
         uint32_t caplen = header->caplen;
         if (caplen > MAX_PACKET_SIZE) caplen = MAX_PACKET_SIZE;
@@ -91,7 +98,7 @@ void PcapCapture::captureLoop() {
 
         raw.block = BlockPtr(rawBlock, BlockDeleter());
 
-        int workerId = hashPacket(pkt_data, caplen);
+        int workerId = hashPacket(pkt_data, caplen, linkOffset);
         workerQueues[workerId]->push(raw);
     }
 }

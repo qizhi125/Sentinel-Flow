@@ -22,6 +22,7 @@ include_directories(
         src/engine/pipeline
         src/engine/flow
         src/engine/context
+        src/engine/governance
         src/presentation/views
         src/presentation/views/pages
         src/presentation/views/components

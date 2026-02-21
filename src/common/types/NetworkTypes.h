@@ -39,7 +39,8 @@ struct RawPacket {
     int64_t kernelTimestampNs;
     BlockPtr block;
 
-    RawPacket() : kernelTimestampNs(0), block(nullptr) {}
+    uint32_t linkLayerOffset;
+    RawPacket() : kernelTimestampNs(0), block(nullptr), linkLayerOffset(14) {}
 };
 
 using MacAddress = std::array<uint8_t, 6>;
@@ -67,6 +68,8 @@ struct ParsedPacket {
 
     std::vector<uint8_t> payloadData;
     size_t payloadSize = 0;
+
+    BlockPtr block;
 
     // 辅助：惰性转换函数 (Lazy Converters)
     QString getSrcIpStr() const { return QHostAddress(srcIp).toString(); }
