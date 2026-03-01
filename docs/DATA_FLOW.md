@@ -1,27 +1,46 @@
-# 数据生命周期 (Data Lifecycle)
+# 数据生命周期与内存拓扑 (Data Lifecycle & Memory Topology) - Sentinel-Flow v2.0
 
-本文档描述了一个数据包在 Sentinel-Flow v6.0 (Hyper-Exchange 架构) 中，从网卡捕获到屏幕渲染的“极速漂流”。全链路严格遵循**零拷贝 (Zero-copy)** 和 **无锁并发 (Lock-free)** 原则。
+本文档描述了一个网络数据包在 Sentinel-Flow v2.0 (Hyper-Exchange 架构) 中，从物理网卡被捕获，直至最终在前端屏幕上渲染的“极速漂流”。
 
-## 第一阶段：入站 (内核态 -> 用户态)
-1.  **抵达**：数据包到达物理网卡的接收队列 (Rx Queue)。
-2.  **打戳**：Linux 内核通过 `SO_TIMESTAMP` 打上纳秒级时间戳 (`kernelTimestampNs`)。
-3.  **借用内存**：`PcapCapture` 驱动直接从 **无锁对象池 (ObjectPool)** 中弹出一个空闲的 `RawPacket` 内存块，避免任何 `new` 操作。
-4.  **软分流 (Soft-RSS)**：计算五元组的 Hash 值，确定该数据包应归属的逻辑 `WorkerID`，保证同一 TCP 会话的局部性。
-5.  **无锁入队**：数据包指针被推入对应物理核心的 **单生产者单消费者无锁队列 (`SPSCQueue`)**。
+全链路严格遵循 **零拷贝 (Zero-Copy)** 和 **无锁并发 (Lock-Free)** 原则。数据包的物理载荷在内存中自始至终只存在一份，跨线程转移的仅仅是带有自定义回收逻辑的智能指针。
 
-## 第二阶段：处理 (核心解析流水线)
-1.  **原子出队**：绑定了独立物理核心的 `PacketPipeline` 线程通过 `popWait` 原子操作获取数据包，全程零互斥锁开销。
-2.  **协议解析**：`PacketParser` 层层剥离 Ethernet / IPv4 / TCP / UDP 头部，提取关键元数据。
-3.  **O(N) 深度检测**：`SecurityEngine` 接入数据，底层通过 **Aho-Corasick (AC) 自动机** 对 Payload 进行多模式并发扫描。无论规则库有 10 条还是 10000 条，扫描时间始终为 $O(N)$。
-4.  **异步取证**：若 AC 自动机命中高危规则，引擎立刻将数据包引用丢给 `ForensicWorker` 进行后台异步 PCAP 落盘，绝不阻塞当前核心的解析进度。
-5.  **组装**：提取显示所需的必要字段，生成轻量级的 `ParsedPacket` 结构体。
+---
 
-## 第三阶段：出站 (批量聚合 -> 虚拟视图)
-1.  **聚合与释放**：`PacketPipeline` 将生成的 `ParsedPacket` 塞入线程局部的 `QVector` 缓冲区；同时，原始的 `RawPacket` 内存块被**立即归还**给对象池循环利用。
-2.  **跨线程零拷贝**：当缓冲区满或定时器触发时，将 `QVector` 包装进 `QSharedPointer`。通过 Qt 的 `qRegisterMetaType`，安全地跨线程投递给主 UI 线程，避免深拷贝。
-3.  **模型更新 (MVC)**：主界面的 `TrafficTableModel` 接收批量数据，将其追加到底层的 `std::deque` 缓冲池中，并精确触发 `beginInsertRows` 信号。
-4.  **按需重绘**：前端 `QTableView` 作为虚拟列表，**仅计算并重绘当前屏幕可见的几十行数据**。即便是 10 万+ 行的高频插入，UI 也能保持 60 FPS 的极致顺滑。
+## 第一阶段：入站与内存出借 (Ingress & Memory Borrowing)
 
-##  核心基石：时间戳的绝对真实性
-我们 **绝不** 使用 `QDateTime::currentDateTime()` 来显示数据包到达时间。
-无论流水线由于流量突发产生了多少毫秒的排队延迟，我们始终透传内核在硬件中断时打上的 `kernelTimestampNs`。**这是确保网络取证具备法律效力的绝对底线。**
+1. **网卡抵达 (NIC Rx)**：数据包到达物理网卡的接收队列，触发软中断。
+2. **内核打戳 (Kernel Timestamping)**：Linux 内核网络栈通过 `SO_TIMESTAMP` 为其打上纳秒级精度的硬件/内核时间戳，确保后续取证的绝对时间精度。
+3. **特权捕获 (Raw Socket)**：以 `cap_net_raw` 特权启动的 `PcapCapture` 线程通过底层的内存映射截获该报文。
+4. **无锁借用 (Pool Pop)**：引擎直接向预热好的无锁对象池 (`ObjectPool`) 发起原子 `pop`，获取一个空闲的 `MemoryBlock`。
+5. **浅拷贝装载 (Shallow Copy)**：将网卡中的原始字节流 `memcpy` 至该 `MemoryBlock` 中，并包装为带有自定义析构器 (`Deleter`) 的 `std::shared_ptr`，构成 `RawPacket` 结构。
+
+## 第二阶段：分流与无锁调度 (Dispatch & Lock-Free Queueing)
+
+1. **软分流 (Soft-RSS)**：解析器快速提取报文的五元组（源/目的 IP、源/目的端口、协议），计算其 Hash 值。
+2. **亲和性映射 (Core Affinity)**：通过 Hash 值取模，将属于同一个 TCP 会话的所有报文，严格映射到同一个逻辑 `WorkerID`，保证 L4 会话状态机的局部性 (Locality)。
+3. **原子入队 (Atomic Push)**：`PcapCapture` 线程将 `RawPacket` 指针推入目标 Worker 专属的 **单生产者单消费者无锁环形队列 (`SPSCQueue`)** 中，内存所有权 (Ownership) 正式从捕获线程转移至队列。
+
+## ⚙️ 第三阶段：解析与深度检测 (Parsing & DPI)
+
+1. **混合自旋出队 (Hybrid-Spin Pop)**：独占物理核心的 `PacketPipeline` 工作线程，通过混合自旋策略（无锁等待）从 `SPSCQueue` 中弹出数据包。
+2. **剥离报头 (Header Stripping)**：`PacketParser` 按 L2 (Ethernet) -> L3 (IPv4) -> L4 (TCP/UDP) 的顺序移动指针偏移量，提取出结构化的 `ParsedPacket` 元数据对象。
+3. **O(N) 自动机检测 (AC Automaton)**：载荷指针被直接送入 `SecurityEngine`。引擎利用预先编译好的 **Aho-Corasick 状态机**，对 Payload 进行 $O(N)$ 时间复杂度的并发扫描，瞬间判定是否命中上万条入侵检测 (IDS) 规则或黑名单。
+
+## 第四阶段：分发与控制面转移 (Divergence & Control Plane)
+
+经过检测的 `ParsedPacket` 将在这里走向两条并行的支线：
+
+- **支线 A：告警与取证落盘 (Threat Storage)**
+  - 如果触发了 Critical / High 级别的安全告警，数据包的元数据将被打包发送给 `AuditLogger`，异步写入 **SQLite WAL 数据库**。
+  - `ForensicManager` 介入，直接从内存池中提取原始载荷，落盘生成标准的 `.pcap` 证据文件供第三方溯源。
+
+- **支线 B：前端视图渲染 (UI Rendering)**
+  - 数据包无法逐个发送给前端（会导致 UI 事件循环崩溃）。`PacketPipeline` 将解析后的数据包缓冲进一个本地的 `std::vector`。
+  - 每达到 5000 个包或时间阈值，打包为一个 `QVector<ParsedPacket>`，通过 Qt 的信号槽机制 (`Qt::QueuedConnection`) 跨线程投递给主线程的 `TrafficTableModel`。
+
+## 第五阶段：销毁与内存归还 (Destruction & Memory Return)
+
+1. **视图消费 (View Consumption)**：Qt 主线程的 `TrafficMonitorPage` 接收到批处理数据，将其挂载到虚拟列表模型中进行增量重绘。
+2. **生命周期终结 (Ref-Count Zero)**：当数据包滚出 UI 的历史限制（或用户清空列表），`TrafficTableModel` 中的 `std::shared_ptr` 引用计数降为 0。
+3. **无锁归还 (Pool Push)**：智能指针的自定义析构器被触发，它不会调用危险的 `delete`，而是直接将底层的 `MemoryBlock` 通过无锁原子操作重新压回 `ObjectPool`。
+4. **轮回 (Rebirth)**：内存块回到第一阶段，等待承载下一个万兆洪峰中的数据包。
