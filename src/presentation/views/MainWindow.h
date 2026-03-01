@@ -1,4 +1,5 @@
 #pragma once
+#include "presentation/adapters/PipelineAdapter.h"
 #include "capture/interface/ICaptureDriver.h"
 #include "engine/pipeline/PacketPipeline.h"
 #include "common/queues/SPSCQueue.h"
@@ -14,8 +15,8 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QPushButton>
-#include <QList>
 #include <vector>
+#include <memory>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -25,8 +26,7 @@ public:
     ~MainWindow() override;
 
 private slots:
-    //void onPacketsReady(QSharedPointer<QVector<ParsedPacket>> packets);
-    void onPacketsProcessed(QSharedPointer<QVector<ParsedPacket>> packets);
+    void onPacketsProcessed(const QSharedPointer<QVector<ParsedPacket>>& packets);
     void onThreatDetected(const Alert& alert, const ParsedPacket& packet);
     void onStatsUpdated(uint64_t bytes);
     void onThemeChanged(bool isDark);
@@ -35,6 +35,7 @@ private:
     void setupUi();
     void setupSidebar();
     void initSystemCore(int workerCount);
+    void resetSidebarButtons();
 
     QWidget *centralWidget;
     QHBoxLayout *mainLayout;
@@ -58,10 +59,10 @@ private:
     QPushButton *btnSettings;
     QPushButton *btnForensics;
 
-    QList<PacketPipeline*> pipelinePool;
-    std::vector<sentinel::capture::PacketQueue*> workerQueues;
+    std::vector<std::unique_ptr<sentinel::engine::PacketPipeline>> pipelinePool;
+    std::vector<std::unique_ptr<sentinel::common::SPSCQueue<RawPacket>>> workerQueues;
 
-    sentinel::capture::ICaptureDriver* m_captureDriver = nullptr;
+    std::vector<sentinel::presentation::PipelineAdapter*> adapterPool;
 
     int totalAlertsSession = 0;
 };

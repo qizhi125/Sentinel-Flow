@@ -33,15 +33,14 @@ void SecurityEngine::addRule(const IdsRule& rule) {
 }
 
 void SecurityEngine::compileRules() {
-    // 1. 获取规则快照 (极短读锁，耗时 O(1))
+    // 获取规则快照
     std::vector<IdsRule> currentRules;
     {
         std::shared_lock lock(rulesMutex);
         currentRules = rules;
     }
 
-    // 2. 在锁外部构建全新的 AC 自动机 (RCU: Copy & Update)
-    // 这里的内存分配和字符串匹配树构建非常耗时，但完全不阻塞管线的 inspect()
+    // 在锁外部构建全新的 AC 自动机
     auto newDetector = std::make_unique<sentinel::engine::AhoCorasick>();
     for (const auto& rule : currentRules) {
         if (rule.enabled && !rule.pattern.empty()) {
@@ -50,7 +49,7 @@ void SecurityEngine::compileRules() {
     }
     newDetector->build();
 
-    // 3. 极速切换指针 (极短写锁，耗时仅几十纳秒)
+    // 极速切换指针
     std::unique_ptr<sentinel::engine::AhoCorasick> oldDetector;
     {
         std::unique_lock lock(rulesMutex);
@@ -60,7 +59,6 @@ void SecurityEngine::compileRules() {
 
     // 4. 旧引擎的销毁发生在锁外部 (脱机销毁)
     // 当 oldDetector 离开作用域时，几万个树节点的 delete 操作被触发
-    // 数据面 Worker 线程继续奔跑，毫无察觉。
 }
 
 std::vector<IdsRule> SecurityEngine::getRules() const {

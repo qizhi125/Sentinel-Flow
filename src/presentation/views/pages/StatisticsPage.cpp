@@ -349,7 +349,6 @@ void StatisticsPage::addPacket(const ParsedPacket& packet) {
     }
 
     protocolBytes[packet.protocol] += packet.totalLen;
-    sourceIpBytes[packet.srcIp] += packet.totalLen;
 
     if (sourceIpBytes.size() < 10000 || sourceIpBytes.contains(packet.srcIp)) {
         sourceIpBytes[packet.srcIp] += packet.totalLen;

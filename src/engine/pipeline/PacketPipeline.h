@@ -1,40 +1,57 @@
 #pragma once
-#include <QThread>
-#include <QObject>
-#include <QVector>
-#include <QMutex>
-#include <QWaitCondition>
-#include <QSharedPointer>
 #include "common/types/NetworkTypes.h"
 #include "common/queues/SPSCQueue.h"
 #include "engine/interface/IInspector.h"
+#include <thread>
+#include <vector>
+#include <functional>
+#include <atomic>
+#include <memory>
 
-class PacketPipeline : public QThread {
-    Q_OBJECT
+namespace sentinel::engine
+{
+    class PacketPipeline
+    {
+    public:
+        // 定义回调契约替代 Qt 信号
+        using BatchCallback = std::function<void(std::shared_ptr<std::vector<ParsedPacket>>)>;
+        using ThreatCallback = std::function<void(const Alert&, const ParsedPacket&)>;
+        using StatsCallback = std::function<void(uint64_t)>;
 
-public:
-    explicit PacketPipeline(QObject *parent = nullptr);
-    ~PacketPipeline() override;
+        explicit PacketPipeline();
+        ~PacketPipeline();
 
-    void setInputQueue(sentinel::common::SPSCQueue<RawPacket>* queue);
-    void setInspector(sentinel::engine::IInspector* inspector);
-    void setCoreId(int coreId);
-    void startPipeline();
-    void stopPipeline();
+        // 禁用拷贝与移动构造，确保线程安全
+        PacketPipeline(const PacketPipeline&) = delete;
+        PacketPipeline& operator=(const PacketPipeline&) = delete;
 
-signals:
-    void packetsProcessed(QSharedPointer<QVector<ParsedPacket>> packets);
-    void threatDetected(const Alert& alert, const ParsedPacket& packet);
-    void statsUpdated(uint64_t bytesProcessed);
+        void setInputQueue(sentinel::common::SPSCQueue<RawPacket>* queue);
+        void setInspector(sentinel::engine::IInspector* inspector);
+        void setCoreId(int coreId);
 
-protected:
-    void run() override;
+        // 依赖注入回调接口
+        void setCallBack(BatchCallback batchCb, ThreatCallback threatCb, StatsCallback statsCb);
 
-private:
-    sentinel::common::SPSCQueue<RawPacket>* inputQueue = nullptr;
-    sentinel::engine::IInspector* m_inspector = nullptr;
-    std::atomic<bool> running{false};
+        void startPipeline();
+        void stopPipeline();
+        void wait(); // 暴露显式等待接口，兼容原有生命周期管理
+        bool isRunning() const; // 暴露管线运行状态
 
-    int m_coreId = -1;
-    QVector<ParsedPacket> packetBatch;
-};
+    private:
+        void run();
+        void flushBatch(uint64_t& bytesAccumulator);
+
+        sentinel::common::SPSCQueue<RawPacket>* inputQueue = nullptr;
+        sentinel::engine::IInspector* m_inspector = nullptr;
+
+        std::atomic<bool> running{false};
+        int m_coreId = -1;
+        std::thread workerThread;
+
+        std::shared_ptr<std::vector<ParsedPacket>> currentBatch;
+
+        BatchCallback m_batchCb;
+        ThreatCallback m_threatCb;
+        StatsCallback m_statsCb;
+    };
+}

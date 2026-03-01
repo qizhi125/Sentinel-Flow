@@ -135,7 +135,8 @@ private:
         for (;;) {
             node->next = head.ptr;
             TaggedHead next{node, head.tag + 1};
-            if (freeHead_.compare_exchange_weak(head, next, std::memory_order_release, std::memory_order_acquire)) return;
+            if (freeHead_.compare_exchange_weak(head, next, std::memory_order_release, std::memory_order_acquire))
+                return;
         }
     }
 

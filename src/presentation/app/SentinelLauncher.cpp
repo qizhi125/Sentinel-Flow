@@ -1,14 +1,17 @@
-#include "SentinelLauncher.h"
+#include "presentation/app/SentinelLauncher.h"
 #include "presentation/cli/CliEngineManager.h"
 #include "presentation/views/MainWindow.h"
 #include "presentation/views/styles/ThemeManager.h"
 #include "common/types/NetworkTypes.h"
 #include <QApplication>
 #include <QCoreApplication>
+#include <QTimer>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <csignal>
+#include <atomic>
+#include <sys/wait.h>
 
 #ifdef __linux__
     #include <sys/socket.h>
@@ -18,19 +21,17 @@
     #include <filesystem>
 #endif
 
+static std::atomic<bool> g_shutdownRequested{false};
+
 void SentinelLauncher::handleSignal(int sig) {
     if (sig == SIGINT || sig == SIGTERM) {
-        std::cout << "\n\033[1;33m[!] 收到停止信号，正在安全回收底层资源 (Graceful Shutdown)...\033[0m\n";
-        if (auto app = QCoreApplication::instance()) {
-            app->quit();
-        } else {
-            std::exit(0);
-        }
+        g_shutdownRequested.store(true, std::memory_order_release);
     }
 }
 
 int SentinelLauncher::run(int argc, char *argv[]) {
     std::signal(SIGINT, handleSignal);
+    std::signal(SIGTERM, handleSignal);
 
     bool isCliMode = false;
     bool skipMenu = false;
@@ -76,32 +77,51 @@ int SentinelLauncher::run(int argc, char *argv[]) {
             if (authChoice.empty() || authChoice == "Y" || authChoice == "y") {
                 std::cout << "\033[1;36m[+] 正在请求授权，请在下方输入当前用户的 sudo 密码：\033[0m\n";
 
-                std::string absPath = std::filesystem::absolute(argv[0]).string();
-                std::string cmd = "sudo setcap cap_net_raw,cap_net_admin=eip \"" + absPath + "\"";
-                int ret = std::system(cmd.c_str());
-
-                if (ret == 0) {
-                    std::cout << "\033[1;32m[+] 授权成功！正在通知操作系统重载进程镜像以应用特权...\033[0m\n";
-
-                    std::vector<char*> new_argv;
-                    new_argv.push_back(const_cast<char*>(absPath.c_str()));
-                    new_argv.push_back(isCliMode ? (char*)"--cli" : (char*)"--gui");
-
-                    for (int i = 1; i < argc; ++i) {
-                        std::string arg = argv[i];
-                        if (arg != "--cli" && arg != "--gui") {
-                            new_argv.push_back(argv[i]);
+                try {
+                    std::string absPath = std::filesystem::canonical(argv[0]).string();
+                    if (!std::filesystem::is_regular_file(absPath)) {
+                        std::cerr << "[!] 可执行文件路径异常: " << absPath << std::endl;
+                    } else {
+                        pid_t pid = fork();
+                        if (pid == 0) {
+                            execlp("sudo", "sudo", "setcap", "cap_net_raw,cap_net_admin=eip", absPath.c_str(), (char*)NULL);
+                            _exit(127);
+                        } else if (pid > 0) {
+                            int status = 0;
+                            waitpid(pid, &status, 0);
+                            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                                std::vector<std::string> args;
+                                args.push_back(absPath);
+                                bool hasMode = false;
+                                for (int i = 1; i < argc; ++i) {
+                                    std::string a = argv[i];
+                                    if (a == "--cli" || a == "--gui") {
+                                        hasMode = true;
+                                        args.push_back(a);
+                                    } else {
+                                        args.push_back(a);
+                                    }
+                                }
+                                if (!hasMode) {
+                                    args.insert(args.begin() + 1, isCliMode ? "--cli" : "--gui");
+                                }
+                                std::vector<char*> cargv;
+                                for (auto &s : args) cargv.push_back(const_cast<char*>(s.c_str()));
+                                cargv.push_back(nullptr);
+                                execv(absPath.c_str(), cargv.data());
+                                perror("execv");
+                                std::exit(1);
+                            } else {
+                                std::cout << "\033[1;31m[!] setcap 执行失败或被取消，继续以离线模式启动。\033[0m\n";
+                            }
+                        } else {
+                            perror("fork");
                         }
                     }
-                    new_argv.push_back(nullptr);
-
-                    execv(absPath.c_str(), new_argv.data());
-
-                    std::cerr << "❌ 进程重载失败！" << std::endl;
-                    std::exit(1);
-                } else {
-                    std::cout << "\033[1;31m[!] 授权失败或被取消。程序将以【无权限离线模式】继续启动。\033[0m\n";
+                } catch (const std::filesystem::filesystem_error& e) {
+                    std::cerr << "[!] 无法解析可执行路径: " << e.what() << std::endl;
                 }
+
             } else {
                 std::cout << "\033[1;33m[!] 用户主动跳过授权。系统按原流程以离线模式继续启动...\033[0m\n";
             }
@@ -120,6 +140,16 @@ int SentinelLauncher::run(int argc, char *argv[]) {
         std::cout << "\033[1;32m[+] 权限验证通过，加载终端守护进程...\033[0m\n";
         CliEngineManager cliManager;
         cliManager.start();
+
+        QTimer shutdownTimer;
+        QObject::connect(&shutdownTimer, &QTimer::timeout, [&app]() {
+            if (g_shutdownRequested.load(std::memory_order_acquire)) {
+                std::cout << "\n\033[1;33m[!] 收到停止信号，正在安全回收底层资源 (Graceful Shutdown)...\033[0m\n";
+                app.quit();
+            }
+        });
+        shutdownTimer.start(100);
+
         return app.exec();
     } else {
         qputenv("QT_QPA_PLATFORM", "xcb");
@@ -136,17 +166,26 @@ int SentinelLauncher::run(int argc, char *argv[]) {
         app.setStyle("fusion");
 
         qRegisterMetaType<ParsedPacket>("ParsedPacket");
-        qRegisterMetaType<QVector<ParsedPacket>>("QVector<ParsedPacket>");
+        qRegisterMetaType<QSharedPointer<QVector<ParsedPacket>>>("QSharedPointer<QVector<ParsedPacket>>");
         qRegisterMetaType<Alert>("Alert");
 
         app.setApplicationName("Sentinel-Flow");
-        app.setApplicationVersion("6.0.0");
+        app.setApplicationVersion("1.0.0");
 
         ThemeManager::applyTheme(app, true);
 
         std::cout << "\033[1;32m[+] 权限验证通过，正在渲染主控大屏...\033[0m\n";
         MainWindow w;
         w.show();
+
+        QTimer shutdownTimer;
+        QObject::connect(&shutdownTimer, &QTimer::timeout, [&app]() {
+            if (g_shutdownRequested.load(std::memory_order_acquire)) {
+                std::cout << "\n\033[1;33m[!] 收到停止信号，正在安全回收底层资源 (Graceful Shutdown)...\033[0m\n";
+                app.quit();
+            }
+        });
+        shutdownTimer.start(100);
 
         return app.exec();
     }
