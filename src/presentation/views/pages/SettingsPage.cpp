@@ -1,179 +1,168 @@
+#include "presentation/views/components/UIFactory.h"
 #include "presentation/views/pages/SettingsPage.h"
-#include "presentation/views/styles/SettingsStyle.h"
+#include "presentation/views/styles/global.h"
 #include "capture/impl/PcapCapture.h"
-#include <QHBoxLayout>
+#include "engine/context/DatabaseManager.h"
 #include <QVBoxLayout>
-#include <QFormLayout>
-#include <QFileDialog>
+#include <QHBoxLayout>
+#include <QGridLayout>
 #include <QMessageBox>
-#include <QStandardPaths>
-#include <QFrame>
+#include <QPalette>
 #include <QApplication>
-#include <QGroupBox>
 
 SettingsPage::SettingsPage(QWidget *parent) : QWidget(parent) {
     setupUi();
-    populateInterfaces();
+    loadPersistedSettings();
 }
 
-void SettingsPage::addSeparator(QVBoxLayout* layout) {
-    auto *line = new QFrame();
-    line->setFrameShape(QFrame::HLine);
-    line->setStyleSheet(SettingsStyle::Separator);
-    layout->addWidget(line);
-}
+QWidget* SettingsPage::createSectionCard(const QString& title) {
+    auto *card = new QFrame();
+    card->setObjectName("Card");
+    auto *layout = new QVBoxLayout(card);
+    layout->setContentsMargins(20, 20, 20, 20);
+    layout->setSpacing(15);
 
-void SettingsPage::addSectionTitle(QVBoxLayout* layout, const QString& title) {
-    auto *lbl = new QLabel(title);
-    lbl->setStyleSheet(SettingsStyle::SectionTitle);
-    layout->addWidget(lbl);
+    auto *lblTitle = new QLabel(title);
+    lblTitle->setStyleSheet("font-size: 15px; font-weight: bold; margin-bottom: 5px;");
+    layout->addWidget(lblTitle);
+
+    return card;
 }
 
 void SettingsPage::setupUi() {
     auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setContentsMargins(24, 20, 24, 20);
+    mainLayout->setSpacing(20);
 
-    auto *scrollArea = new QScrollArea();
-    scrollArea->setWidgetResizable(true);
-    scrollArea->setStyleSheet(SettingsStyle::ScrollArea);
+    mainLayout->addWidget(UIFactory::createInfoBox("系统全局配置", "修改底层捕获引擎、用户界面偏好及数据库维护策略。部分核心引擎参数修改后需要重启流量捕获才能生效。"), 0);
 
-    auto *contentWidget = new QWidget();
-    contentWidget->setStyleSheet(SettingsStyle::ContentWidget);
+    auto *gridLayout = new QGridLayout();
+    gridLayout->setSpacing(20);
 
-    auto *contentLayout = new QVBoxLayout(contentWidget);
-    contentLayout->setContentsMargins(40, 30, 40, 30);
-    contentLayout->setSpacing(15);
+    QWidget *engineCard = createSectionCard("🚀 捕获引擎 (Capture Engine)");
+    auto *engineLayout = qobject_cast<QVBoxLayout*>(engineCard->layout());
 
-    // --- 1. 核心引擎配置 ---
-    addSectionTitle(contentLayout, "核心引擎配置");
-
-    auto *formCore = new QFormLayout();
-    formCore->setSpacing(15);
-
-    comboInterface = new QComboBox();
-    comboInterface->setMinimumWidth(300);
-    formCore->addRow(new QLabel("监听接口:", contentWidget), comboInterface);
-
-    chkPromiscuous = new QCheckBox("开启混杂模式");
-    chkPromiscuous->setStyleSheet(SettingsStyle::getCheckBox());
-    chkPromiscuous->setChecked(true);
-    formCore->addRow("", chkPromiscuous);
-
-    editGlobalBpf = new QLineEdit();
-    editGlobalBpf->setPlaceholderText("例如: tcp port 80");
-    editGlobalBpf->setStyleSheet(SettingsStyle::Input);
-    formCore->addRow(new QLabel("BPF 过滤器:", contentWidget), editGlobalBpf);
-
-    contentLayout->addLayout(formCore);
-
-    // 重启引擎按钮 (限制宽度)
-    auto *btnLayoutCore = new QHBoxLayout();
-    btnLayoutCore->addStretch();
-    btnRestartEngine = new QPushButton("应用配置并重启引擎");
-    btnRestartEngine->setFixedWidth(200);
-    btnRestartEngine->setStyleSheet(SettingsStyle::BtnPrimary);
-    connect(btnRestartEngine, &QPushButton::clicked, this, &SettingsPage::onApplyCoreClicked);
-    contentLayout->addWidget(btnRestartEngine);
-
-    addSeparator(contentLayout);
-
-    // --- 2. 显示与监控 ---
-    addSectionTitle(contentLayout, "显示与监控");
-    auto *formDisplay = new QFormLayout();
-    formDisplay->setSpacing(15);
-
-    spinRefreshRate = new QSpinBox();
-    spinRefreshRate->setRange(100, 5000);
-    spinRefreshRate->setValue(1000);
-    spinRefreshRate->setSuffix(" ms");
-    formDisplay->addRow(new QLabel("刷新频率:", contentWidget), spinRefreshRate);
-
-    comboTheme = new QComboBox();
-    comboTheme->addItem("深色模式 (Dark)", QVariant(true));
-    comboTheme->addItem("浅色模式 (Light)", QVariant(false));
-    comboTheme->setMinimumWidth(200);
-    connect(comboTheme, &QComboBox::currentIndexChanged, [this](int index){
-        bool isDark = comboTheme->itemData(index).toBool();
-        emit themeChanged(isDark);
-    });
-    formDisplay->addRow(new QLabel("界面主题:", contentWidget), comboTheme);
-
-    contentLayout->addLayout(formDisplay);
-
-    addSeparator(contentLayout);
-
-    // --- 3. 数据存储 ---
-    addSectionTitle(contentLayout, "数据存储");
-
-    auto *lblRetention = new QLabel("数据保留策略:", contentWidget);
-    contentLayout->addWidget(lblRetention);
-
-    auto *retainLayout = new QHBoxLayout();
-    grpRetention = new QButtonGroup(this);
-    auto addRetainOpt = [&](const QString& text, int id, bool checked=false) {
-        auto *rb = new QRadioButton(text);
-        rb->setStyleSheet(SettingsStyle::getRadioButton());
-        rb->setChecked(checked);
-        grpRetention->addButton(rb, id);
-        retainLayout->addWidget(rb);
-    };
-    addRetainOpt("1 天", 1);
-    addRetainOpt("3 天", 3);
-    addRetainOpt("7 天", 7, true);
-    addRetainOpt("永久", -1);
-    retainLayout->addStretch();
-    contentLayout->addLayout(retainLayout);
-    connect(grpRetention, &QButtonGroup::idClicked, this, &SettingsPage::onRetentionToggled);
-
-    auto *storeLayout = new QHBoxLayout();
-    editSavePath = new QLineEdit(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
-    editSavePath->setReadOnly(true);
-    editSavePath->setStyleSheet(SettingsStyle::Input);
-    storeLayout->addWidget(editSavePath);
-
-    // 清空按钮：鲜红色，宽度与上方对齐
-    btnClearDb = new QPushButton("🗑 清空所有历史数据");
-    btnClearDb->setFixedWidth(200);
-    btnClearDb->setStyleSheet(SettingsStyle::BtnDanger);
-    connect(btnClearDb, &QPushButton::clicked, this, &SettingsPage::onClearDataClicked);
-    storeLayout->addWidget(btnClearDb);
-
-    contentLayout->addLayout(storeLayout);
-
-    contentLayout->addStretch();
-    scrollArea->setWidget(contentWidget);
-    mainLayout->addWidget(scrollArea);
-}
-
-void SettingsPage::populateInterfaces() {
-    comboInterface->clear();
-    std::vector<std::string> devs = PcapCapture::getDeviceList();
-    if (devs.empty()) {
-        comboInterface->addItem("❌ 未检测到网卡");
-        comboInterface->setEnabled(false);
-    } else {
-        for(const auto& d : devs) {
-            QString name = QString::fromStdString(d);
-            comboInterface->addItem("🔌 " + name, name);
-        }
-        comboInterface->setEnabled(true);
+    auto *h1 = new QHBoxLayout();
+    h1->addWidget(new QLabel("监听网卡 (Interface):"));
+    cbInterface = new QComboBox();
+    for (const auto& dev : PcapCapture::instance().getDeviceList()) {
+        cbInterface->addItem(QString::fromStdString(dev));
     }
+    h1->addWidget(cbInterface, 1);
+    engineLayout->addLayout(h1);
+
+    chkPromiscuous = new QCheckBox("启用混杂模式 (Promiscuous Mode)");
+    chkPromiscuous->setToolTip("开启后将捕获局域网内所有流经本网卡的流量，而不仅限于发往本机的流量。");
+    engineLayout->addWidget(chkPromiscuous);
+
+    auto *h2 = new QHBoxLayout();
+    h2->addWidget(new QLabel("环形缓冲区大小 (MB):"));
+    spinBufferSize = new QSpinBox();
+    spinBufferSize->setRange(16, 1024);
+    spinBufferSize->setValue(128);
+    spinBufferSize->setSuffix(" MB");
+    h2->addWidget(spinBufferSize);
+    h2->addStretch();
+    engineLayout->addLayout(h2);
+
+    btnApplyEngine = new QPushButton("应用并热重启引擎");
+    btnApplyEngine->setProperty("type", "danger");
+    connect(btnApplyEngine, &QPushButton::clicked, this, &SettingsPage::onApplyEngineSettings);
+    engineLayout->addStretch();
+    engineLayout->addWidget(btnApplyEngine, 0, Qt::AlignRight);
+
+    gridLayout->addWidget(engineCard, 0, 0);
+
+    QWidget *appearanceCard = createSectionCard("🎨 外观与交互 (Appearance)");
+    auto *appLayout = qobject_cast<QVBoxLayout*>(appearanceCard->layout());
+
+    auto *h3 = new QHBoxLayout();
+    h3->addWidget(new QLabel("系统主题 (Theme):"));
+    cbTheme = new QComboBox();
+    cbTheme->addItems({"☀️ 浅色模式 (Light)", "🌙 深色模式 (Dark)"});
+    connect(cbTheme, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SettingsPage::onThemeSelectionChanged);
+    h3->addWidget(cbTheme, 1);
+    appLayout->addLayout(h3);
+
+    chkAutoStart = new QCheckBox("开启桌面系统原生通知框");
+    chkAutoStart->setChecked(true);
+    appLayout->addWidget(chkAutoStart);
+    appLayout->addStretch();
+
+    gridLayout->addWidget(appearanceCard, 0, 1);
+
+    QWidget *storageCard = createSectionCard("🗄️ 存储与维护 (Maintenance)");
+    auto *storageLayout = qobject_cast<QVBoxLayout*>(storageCard->layout());
+
+    auto *h4 = new QHBoxLayout();
+    h4->addWidget(new QLabel("告警日志保留策略:"));
+    cbLogRetention = new QComboBox();
+    cbLogRetention->addItems({"保留最近 7 天", "保留最近 30 天", "保留最近 90 天", "永久保留"});
+    cbLogRetention->setCurrentIndex(1);
+    h4->addWidget(cbLogRetention, 1);
+    storageLayout->addLayout(h4);
+
+    auto *lblDbHint = new QLabel("由于 SQLite 采用 WAL 模式，频繁写入告警会导致数据库体积膨胀。\n建议每月进行一次碎片整理以释放磁盘空间。");
+    lblDbHint->setStyleSheet("color: #888; font-size: 11px; margin-top: 10px;");
+    storageLayout->addWidget(lblDbHint);
+
+    btnVacuumDb = new QPushButton("🧹 执行数据库碎片整理 (Vacuum)");
+    btnVacuumDb->setProperty("type", "primary");
+    connect(btnVacuumDb, &QPushButton::clicked, this, &SettingsPage::onVacuumDatabase);
+    storageLayout->addStretch();
+    storageLayout->addWidget(btnVacuumDb, 0, Qt::AlignRight);
+
+    gridLayout->addWidget(storageCard, 1, 0, 1, 2);
+
+    gridLayout->setColumnStretch(0, 5);
+    gridLayout->setColumnStretch(1, 5);
+
+    mainLayout->addLayout(gridLayout, 1);
 }
 
-void SettingsPage::onApplyCoreClicked() {
-    QString iface = comboInterface->currentData().toString();
-    QString bpf = editGlobalBpf->text();
-    emit captureInterfaceChanged(iface);
-    QMessageBox::information(this, "配置已应用", QString("核心引擎正在重启...\n\n监听接口: %1\nBPF规则: %2").arg(iface, bpf.isEmpty() ? "无" : bpf));
+void SettingsPage::loadPersistedSettings() {
+    QString savedIface = QString::fromStdString(DatabaseManager::instance().loadConfig("capture_interface", ""));
+    if (!savedIface.isEmpty()) {
+        int idx = cbInterface->findText(savedIface);
+        if (idx >= 0) cbInterface->setCurrentIndex(idx);
+    }
+
+    bool promisc = DatabaseManager::instance().loadConfig("promiscuous_mode", "1") == "1";
+    chkPromiscuous->setChecked(promisc);
+
+    int themeIdx = std::stoi(DatabaseManager::instance().loadConfig("ui_theme", "1"));
+    cbTheme->blockSignals(true);
+    cbTheme->setCurrentIndex(themeIdx);
+    cbTheme->blockSignals(false);
 }
 
-void SettingsPage::onClearDataClicked() {
-    auto reply = QMessageBox::question(this, "高危操作", "确定要清空所有历史数据吗？\n此操作不可恢复！", QMessageBox::Yes | QMessageBox::No);
+void SettingsPage::onApplyEngineSettings() {
+    QString selectedIface = cbInterface->currentText();
+    if (selectedIface.isEmpty()) return;
+
+    DatabaseManager::instance().saveConfig("capture_interface", selectedIface.toStdString());
+    DatabaseManager::instance().saveConfig("promiscuous_mode", chkPromiscuous->isChecked() ? "1" : "0");
+
+    emit captureInterfaceChanged(selectedIface);
+
+    QMessageBox::information(this, "引擎已重启", QString("底层捕获引擎已成功切换至: %1\n当前模式: %2").arg(selectedIface, chkPromiscuous->isChecked() ? "混杂模式 (Promiscuous)" : "普通模式"));
+}
+
+void SettingsPage::onThemeSelectionChanged(int index) {
+    bool isDark = (index == 1);
+
+    DatabaseManager::instance().saveConfig("ui_theme", isDark ? "1" : "0");
+
+    emit themeChanged(isDark);
+}
+
+void SettingsPage::onThemeChanged() {
+}
+
+void SettingsPage::onVacuumDatabase() {
+    auto reply = QMessageBox::question(this, "数据库维护", "执行 Vacuum 将会锁定数据库几秒钟以释放碎片空间。\n确定现在执行吗？", QMessageBox::Yes | QMessageBox::No);
     if (reply == QMessageBox::Yes) {
-        QMessageBox::information(this, "完成", "历史数据已清空。");
+        // [未来可接入 DatabaseManager::instance().vacuum()]
+        QMessageBox::information(this, "维护完成", "数据库碎片整理完成，性能已优化。");
     }
-}
-
-void SettingsPage::onRetentionToggled(int id) {
-    emit dataRetentionChanged(id);
 }

@@ -1,29 +1,87 @@
+#include "presentation/views/components/PacketDetailRenderer.h"
 #include "presentation/views/pages/TrafficMonitorPage.h"
 #include "presentation/views/styles/TrafficMonitorStyle.h"
+#include "common/utils/StringUtils.h"
+#include <QSortFilterProxyModel>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QSplitter>
 #include <QLabel>
 #include <QDateTime>
-#include <iomanip>
-#include <sstream>
 #include <QScrollBar>
 #include <QEvent>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonDocument>
-#include <QRegularExpression>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QHostAddress>
+#include <QElapsedTimer>
+#include <QDebug>
+#include <QMenu>
+#include <QAction>
+#include <QClipboard>
+#include <QApplication>
+#include <QSaveFile>
+#include <QTextStream>
+#include <QDir>
+#include <QFileInfo>
+
+class TrafficProxyModel : public QSortFilterProxyModel {
+public:
+    explicit TrafficProxyModel(QObject* parent = nullptr) : QSortFilterProxyModel(parent) {}
+
+    QString filterText;
+    QString filterProto = "全部协议";
+
+    void setFilter(const QString& text, const QString& proto) {
+        beginFilterChange();
+        filterText = text;
+        filterProto = proto;
+        endFilterChange();
+    }
+
+protected:
+    bool filterAcceptsRow(int source_row, const QModelIndex &source_parent) const override {
+        Q_UNUSED(source_parent);
+
+        auto* model = qobject_cast<TrafficTableModel*>(sourceModel());
+        if (!model) return false;
+
+        const ParsedPacket* pkt = model->getPacketAt(source_row);
+        if (!pkt) return false;
+
+        if (filterProto != "全部协议" && QString(pkt->protocol) != filterProto) {
+            return false;
+        }
+
+        if (!filterText.isEmpty()) {
+            if (QString(pkt->protocol).contains(filterText, Qt::CaseInsensitive)) return true;
+            if (pkt->getSrcStr().contains(filterText, Qt::CaseInsensitive)) return true;
+            if (pkt->getDstStr().contains(filterText, Qt::CaseInsensitive)) return true;
+            if (pkt->getSummary().contains(filterText, Qt::CaseInsensitive)) return true;
+
+            return false;
+        }
+        return true;
+    }
+};
 
 TrafficMonitorPage::TrafficMonitorPage(QWidget *parent) : QWidget(parent) {
     setupUi();
+
     uiTimer = new QTimer(this);
     uiTimer->setInterval(200);
     connect(uiTimer, &QTimer::timeout, this, &TrafficMonitorPage::processPendingPackets);
     uiTimer->start();
+
+    filterDebounceTimer = new QTimer(this);
+    filterDebounceTimer->setSingleShot(true);
+    filterDebounceTimer->setInterval(300);
+    connect(filterDebounceTimer, &QTimer::timeout, this, &TrafficMonitorPage::refreshTable);
+
+    tableView->installEventFilter(this);
 }
 
 void TrafficMonitorPage::setupUi() {
@@ -31,7 +89,6 @@ void TrafficMonitorPage::setupUi() {
     mainLayout->setContentsMargins(20, 20, 20, 20);
     mainLayout->setSpacing(15);
 
-    // Toolbar
     auto *toolbar = new QHBoxLayout();
     toolbar->setSpacing(12);
 
@@ -39,14 +96,14 @@ void TrafficMonitorPage::setupUi() {
     searchBox->setPlaceholderText("🔍 过滤: 协议 / 端口 / IP");
     searchBox->setFixedWidth(300);
     searchBox->setStyleSheet(TrafficStyle::getSearchBox());
-    // 🔥 优化：连接搜索框信号，实现实时搜索
+
     connect(searchBox, &QLineEdit::textChanged, this, &TrafficMonitorPage::onFilterChanged);
 
     comboProtocol = new QComboBox();
     comboProtocol->addItems({"全部协议", "TCP", "UDP", "HTTP", "TLS", "ICMP"});
     comboProtocol->setFixedWidth(120);
     comboProtocol->setStyleSheet(TrafficStyle::getComboBox());
-    // 连接协议下拉框信号
+
     connect(comboProtocol, &QComboBox::currentIndexChanged, this, &TrafficMonitorPage::onFilterChanged);
 
     chkAutoScroll = new QCheckBox("自动滚动");
@@ -74,15 +131,11 @@ void TrafficMonitorPage::setupUi() {
     btnClear->setStyleSheet(TrafficStyle::getBtnDanger());
 
     connect(btnClear, &QPushButton::clicked, [this](){
-        table->setRowCount(0);
-        packetBuffer.clear();
-
-        // 使用 vector 的 clear 方法
+        tableModel->clear();
         pendingPackets.clear();
-
         hexView->clear();
         protoTree->clear();
-        m_localSeq = 0;
+        lastRowRepeatCount = 1;
         lblSelectedInfo->setText("选择数据包以查看详情");
     });
 
@@ -99,19 +152,43 @@ void TrafficMonitorPage::setupUi() {
     auto *splitter = new QSplitter(Qt::Vertical);
     splitter->setHandleWidth(1);
 
-    table = new QTableWidget();
-    table->setColumnCount(7);
-    table->setHorizontalHeaderLabels({"序号", "时间", "源地址", "目的地址", "协议", "长度", "信息"});
-    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    table->setShowGrid(false);
+    tableView = new QTableView();
+    tableModel = new TrafficTableModel(this);
+    proxyModel = new TrafficProxyModel(this);
+    proxyModel->setSourceModel(tableModel);
+    tableView->setModel(proxyModel);
 
-    table->verticalHeader()->setDefaultSectionSize(32);
+    tableView->setShowGrid(false);
+    tableView->verticalHeader()->setVisible(false);
+    tableView->verticalHeader()->setDefaultSectionSize(32);
+    tableView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tableView->setSelectionMode(QAbstractItemView::SingleSelection);
+    tableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
-    connect(table, &QTableWidget::itemSelectionChanged, [this](){
-        int row = table->currentRow();
-        if (row >= 0) updateHexView(row);
+    tableView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+    tableView->setColumnWidth(0, 70);
+    tableView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    tableView->setColumnWidth(1, 110);
+
+    tableView->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
+    tableView->setColumnWidth(2, 180);
+    tableView->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    tableView->setColumnWidth(3, 180);
+
+    tableView->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
+    tableView->setColumnWidth(4, 80);
+    tableView->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Fixed);
+    tableView->setColumnWidth(5, 80);
+
+    tableView->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+
+    connect(tableView->selectionModel(), &QItemSelectionModel::currentChanged, [this](const QModelIndex &current, const QModelIndex &){
+        if (current.isValid()) {
+            updateHexView(current.row());
+        }
     });
-    splitter->addWidget(table);
+    splitter->addWidget(tableView);
 
     auto *detailContainer = new QWidget();
     detailContainer->setObjectName("Card");
@@ -131,6 +208,10 @@ void TrafficMonitorPage::setupUi() {
     hexView = new QTextEdit();
     hexView->setReadOnly(true);
     hexView->setStyleSheet(TrafficStyle::getHexViewStyle());
+
+    hexView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(hexView, &QTextEdit::customContextMenuRequested, this, &TrafficMonitorPage::onHexViewContextMenu);
+
     hDetailLayout->addWidget(hexView, 6);
 
     vDetailLayout->addLayout(hDetailLayout);
@@ -141,254 +222,220 @@ void TrafficMonitorPage::setupUi() {
     mainLayout->addWidget(splitter);
 }
 
-QTreeWidgetItem* TrafficMonitorPage::addTreeItem(QTreeWidgetItem *parent, const QString &title, const QString &value) {
-    QTreeWidgetItem *item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(protoTree);
-    item->setText(0, value.isEmpty() ? title : QString("%1: %2").arg(title, value));
-    return item;
+void TrafficMonitorPage::onHexViewContextMenu(const QPoint& pos) {
+    QModelIndexList selected = tableView->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+
+    QModelIndex sourceIdx = proxyModel->mapToSource(selected.first());
+    const ParsedPacket* packet = tableModel->getPacketAt(sourceIdx.row());
+
+    if (!packet || packet->payloadData.empty()) {
+        return;
+    }
+
+    QMenu contextMenu(this);
+    QAction *actHexStream = contextMenu.addAction("📄 复制为纯十六进制流 (Hex Stream)");
+    QAction *actHexDump   = contextMenu.addAction("📄 复制为当前视图 (Hex Dump)");
+    QAction *actPrintable = contextMenu.addAction("📄 复制为可打印字符 (Printable Text)");
+
+    QAction *selectedAction = contextMenu.exec(hexView->mapToGlobal(pos));
+    if (!selectedAction) return;
+
+    QString clipboardText;
+
+    if (selectedAction == actHexStream) {
+        clipboardText.reserve(packet->payloadData.size() * 2);
+        static const char hexChars[] = "0123456789ABCDEF";
+        for (uint8_t byte : packet->payloadData) {
+            clipboardText.append(hexChars[byte >> 4]);
+            clipboardText.append(hexChars[byte & 0xF]);
+        }
+    } else if (selectedAction == actHexDump) {
+        clipboardText = hexView->toPlainText();
+    } else if (selectedAction == actPrintable) {
+        clipboardText.reserve(packet->payloadData.size());
+        for (uint8_t byte : packet->payloadData) {
+            clipboardText.append((byte >= 32 && byte <= 126) ? QChar(byte) : QChar('.'));
+        }
+    }
+
+    if (!clipboardText.isEmpty()) {
+        QApplication::clipboard()->setText(clipboardText);
+    }
 }
 
 void TrafficMonitorPage::addPacket(const ParsedPacket& packet) {
     if (isPaused) return;
 
-    QString filter = searchBox->text();
-    if (!filter.isEmpty()) {
-        QString content = packet.getSrcStr() + packet.getDstStr() + QString(packet.protocol);
-        if (!content.contains(filter, Qt::CaseInsensitive)) return;
-    }
-
-    if (pendingPackets.size() < 5000)
+    if (pendingPackets.size() < 100000)
         pendingPackets.push_back(packet);
 }
 
 void TrafficMonitorPage::processPendingPackets() {
-    if (pendingPackets.empty()) return;
-    if (!table || !chkAutoScroll || !chkCollapse) return;
+    if (hoverPaused || pendingPackets.empty()) return;
+    if (!tableView || !chkAutoScroll || !chkCollapse) return;
 
-    table->setUpdatesEnabled(false);
-    table->setSortingEnabled(false);
+    static QElapsedTimer timer;
+    if (!timer.isValid()) timer.start();
+    timer.restart();
 
-    QString filterText = searchBox->text();
-    QString filterProto = comboProtocol->currentText();
-    bool hasProtoFilter = (filterProto != "全部协议");
+    std::vector<ParsedPacket> batchToAdd;
 
-    int processedCount = 0;
-    const int BATCH_PROCESS_LIMIT = 200;
-
-    while (processedCount < BATCH_PROCESS_LIMIT && !pendingPackets.empty()) {
-        ParsedPacket packet = pendingPackets.front();
+    while (!pendingPackets.empty() && timer.elapsed() < 5) {
+        ParsedPacket pkt = pendingPackets.front();
         pendingPackets.pop_front();
-        processedCount++;
-
-        bool match = true;
-        if (hasProtoFilter) {
-            if (QString(packet.protocol) != filterProto) match = false;
-        }
-
-        if (match && !filterText.isEmpty()) {
-            QString content = packet.getSrcStr() + packet.getDstStr() +
-                             QString(packet.protocol) + packet.getSummary();
-            if (!content.contains(filterText, Qt::CaseInsensitive)) match = false;
-        }
-
-        if (!match) continue;
 
         bool merged = false;
-        if (chkCollapse->isChecked() && !packetBuffer.empty()) {
-            ParsedPacket& last = packetBuffer.back();
-            if (last.srcIp == packet.srcIp && last.dstIp == packet.dstIp &&
-                std::strcmp(last.protocol, packet.protocol) == 0) {
+        if (chkCollapse->isChecked()) {
+            const ParsedPacket* lastPkt = nullptr;
+            if (!batchToAdd.empty()) {
+                lastPkt = &batchToAdd.back();
+            } else if (tableModel->rowCount() > 0) {
+                lastPkt = tableModel->getPacketAt(tableModel->rowCount() - 1);
+            }
+
+            if (lastPkt && lastPkt->srcIp == pkt.srcIp && lastPkt->dstIp == pkt.dstIp &&
+                std::strcmp(lastPkt->protocol, pkt.protocol) == 0) {
 
                 merged = true;
                 lastRowRepeatCount++;
-                last = packet;
 
-                int lastRow = table->rowCount() - 1;
-                if (lastRow >= 0) {
-                    QDateTime time = QDateTime::fromMSecsSinceEpoch(packet.timestamp);
-                    table->item(lastRow, 1)->setText(time.toString("HH:mm:ss.zzz"));
-                    table->item(lastRow, 6)->setText(packet.getSummary() + QString(" [x%1]").arg(lastRowRepeatCount));
+                if (!batchToAdd.empty()) {
+                    batchToAdd.back() = pkt;
+                } else {
+                    tableModel->updateLastPacket(pkt, lastRowRepeatCount);
                 }
             }
         }
 
         if (!merged) {
             lastRowRepeatCount = 1;
-
-            if (packetBuffer.size() >= MAX_BUFFER_SIZE) {
-                packetBuffer.erase(packetBuffer.begin());
-                if (table->rowCount() > 0) table->removeRow(0);
-            }
-            packetBuffer.push_back(packet);
-
-            if (table->rowCount() >= MAX_UI_ROWS) {
-                table->removeRow(0);
-            }
-
-            int row = table->rowCount();
-            table->insertRow(row);
-            m_localSeq++;
-
-            QDateTime time = QDateTime::fromMSecsSinceEpoch(packet.timestamp);
-
-            table->setItem(row, 0, new QTableWidgetItem(QString::number(m_localSeq)));
-            table->setItem(row, 1, new QTableWidgetItem(time.toString("HH:mm:ss.zzz")));
-            table->setItem(row, 2, new QTableWidgetItem(packet.getSrcStr()));
-            table->setItem(row, 3, new QTableWidgetItem(packet.getDstStr()));
-
-            QString protoStr = QString(packet.protocol);
-            auto *protoItem = new QTableWidgetItem(protoStr);
-            if (protoStr == "TCP") protoItem->setForeground(QColor(TrafficStyle::ColorTCP));
-            else if (protoStr == "UDP") protoItem->setForeground(QColor(TrafficStyle::ColorUDP));
-            else if (protoStr == "HTTP") protoItem->setForeground(QColor(TrafficStyle::ColorHTTP));
-            else if (protoStr == "TLS") protoItem->setForeground(QColor(TrafficStyle::ColorTLS));
-
-            table->setItem(row, 4, protoItem);
-            table->setItem(row, 5, new QTableWidgetItem(QString::number(packet.totalLen)));
-            table->setItem(row, 6, new QTableWidgetItem(packet.getSummary()));
+            batchToAdd.push_back(pkt);
         }
     }
 
-    if (chkAutoScroll->isChecked()) {
-        table->scrollToBottom();
+    if (!batchToAdd.empty()) {
+        tableModel->addPackets(batchToAdd);
     }
 
-    table->setUpdatesEnabled(true);
+    if (chkAutoScroll->isChecked() && !hoverPaused) {
+        tableView->scrollToBottom();
+    }
 }
 
 void TrafficMonitorPage::onExportClicked() {
-    if (packetBuffer.empty()) {
-        QMessageBox::information(this, "导出", "没有数据可导出！");
+    int totalRows = tableModel->rowCount();
+    if (totalRows == 0) {
+        QMessageBox::information(this, "导出", "当前没有流量数据可导出！");
         return;
     }
-    QString fileName = QFileDialog::getSaveFileName(this, "导出数据", "", "CSV 文件 (*.csv);;JSON 文件 (*.json)");
+
+    QString selectedFilter;
+    QString initialPath = QDir::homePath() + "/Traffic_Export_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmm");
+    QString fileName = QFileDialog::getSaveFileName(this, "导出流量数据", initialPath,
+                                                     "CSV 文件 (*.csv);;JSON 文件 (*.json)",
+                                                     &selectedFilter, QFileDialog::DontUseNativeDialog);
     if (fileName.isEmpty()) return;
 
-    QFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QFileInfo fi(fileName);
+    QString targetExt = selectedFilter.contains("json", Qt::CaseInsensitive) ? "json" : "csv";
+    if (fi.suffix().toLower() != targetExt) {
+        fileName = fi.absolutePath() + "/" + fi.completeBaseName() + "." + targetExt;
+    }
+
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "错误", "无法创建文件，请确认权限！");
+        return;
+    }
 
     QTextStream out(&file);
-    if (fileName.endsWith(".json", Qt::CaseInsensitive)) {
-        QJsonArray jsonArray;
-        for (const auto& pkt : packetBuffer) {
+    out.setEncoding(QStringConverter::Utf8);
+
+    if (targetExt == "json") {
+        QJsonArray rootArray;
+        for (int i = 0; i < totalRows; ++i) {
+            const ParsedPacket* pkt = tableModel->getPacketAt(i);
+            if (!pkt) continue;
+
             QJsonObject obj;
-            obj["no"] = static_cast<qint64>(pkt.id);
-            QDateTime time = QDateTime::fromMSecsSinceEpoch(pkt.timestamp);
-            obj["time"] = time.toString("HH:mm:ss.zzz");
-            obj["src"] = pkt.getSrcStr();
-            obj["dst"] = pkt.getDstStr();
-            obj["proto"] = QString(pkt.protocol);
-            obj["len"] = static_cast<qint64>(pkt.totalLen);
-            obj["info"] = pkt.getSummary();
-            jsonArray.append(obj);
+            obj["no"] = static_cast<qint64>(i + 1);
+            obj["time"] = QDateTime::fromMSecsSinceEpoch(pkt->timestamp).toString("HH:mm:ss.zzz");
+            obj["src"] = pkt->getSrcStr();
+            obj["dst"] = pkt->getDstStr();
+            obj["proto"] = QString(pkt->protocol);
+            obj["len"] = static_cast<qint64>(pkt->totalLen);
+            obj["info"] = pkt->getSummary();
+            rootArray.append(obj);
+
+            if (i % 500 == 0) QCoreApplication::processEvents();
         }
-        out << QJsonDocument(jsonArray).toJson();
+        out << QJsonDocument(rootArray).toJson(QJsonDocument::Indented);
     } else {
         out << "No.,Time,Source,Destination,Protocol,Length,Info\n";
-        for (const auto& pkt : packetBuffer) {
-            QDateTime time = QDateTime::fromMSecsSinceEpoch(pkt.timestamp);
-            out << m_localSeq << "," << time.toString("HH:mm:ss.zzz") << ","
-                << pkt.getSrcStr() << "," << pkt.getDstStr() << ","
-                << QString(pkt.protocol) << "," << pkt.totalLen << ",\""
-                << pkt.getSummary() << "\"\n";
+        for (int i = 0; i < totalRows; ++i) {
+            const ParsedPacket* pkt = tableModel->getPacketAt(i);
+            if (!pkt) continue;
+
+            QString timeStr = QDateTime::fromMSecsSinceEpoch(pkt->timestamp).toString("HH:mm:ss.zzz");
+            QString escapedInfo = pkt->getSummary().replace("\"", "\"\"");
+
+            out << (i + 1) << ","
+                << timeStr << ","
+                << pkt->getSrcStr() << ","
+                << pkt->getDstStr() << ","
+                << QString(pkt->protocol) << ","
+                << pkt->totalLen << ","
+                << "\"" << escapedInfo << "\"\n";
+
+            if (i % 500 == 0) QCoreApplication::processEvents();
         }
     }
-    file.close();
-    QMessageBox::information(this, "成功", "数据导出成功！");
+
+    if (file.commit()) {
+        QMessageBox::information(this, "成功", QString("已成功导出 %1 条流量审计记录。").arg(totalRows));
+    } else {
+        QMessageBox::critical(this, "失败", "文件提交失败，请检查磁盘空间。");
+    }
 }
 
 void TrafficMonitorPage::updateHexView(int row) {
-    if (row < 0 || row >= (int)packetBuffer.size()) return;
-    const auto& packet = packetBuffer[row];
+    if (row < 0 || row >= proxyModel->rowCount()) return;
+    QModelIndex sourceIdx = proxyModel->mapToSource(proxyModel->index(row, 0));
+    const ParsedPacket* pkt = tableModel->getPacketAt(sourceIdx.row());
 
-    QDateTime time = QDateTime::fromMSecsSinceEpoch(packet.timestamp);
-    QString headerInfo = QString("📦 #%1 | %2 | %3 | %4 -> %5 | %6")
-            .arg(table->item(row, 0) ? table->item(row, 0)->text() : "0")
-            .arg(time.toString("HH:mm:ss.zzz"))
-            .arg(QString(packet.protocol))
-            .arg(packet.getSrcStr())
-            .arg(packet.getDstStr())
-            .arg(packet.getSummary());
-    lblSelectedInfo->setText(headerInfo);
-
-    const std::vector<uint8_t>& data = packet.payloadData;
-    if (data.empty()) {
-        hexView->setText("无载荷内容 (仅报头)");
-    } else {
-        std::stringstream ss;
-        ss << std::hex << std::setfill('0');
-        for (size_t i = 0; i < data.size(); i += 16) {
-            ss << std::setw(4) << i << "  ";
-            for (size_t j = 0; j < 16; ++j) {
-                if (i + j < data.size()) ss << std::setw(2) << static_cast<int>(data[i + j]) << " ";
-                else ss << "   ";
-                if (j == 7) ss << " ";
-            }
-            ss << "  ";
-            for (size_t j = 0; j < 16; ++j) {
-                if (i + j < data.size()) {
-                    unsigned char c = data[i + j];
-                    ss << (c >= 32 && c <= 126 ? (char)c : '.');
-                }
-            }
-            ss << "\n";
-        }
-        hexView->setText(QString::fromStdString(ss.str()).toUpper());
-    }
-
-    protoTree->clear();
-    QTreeWidgetItem *itemFrame = addTreeItem(nullptr, QString("Frame: %1 bytes").arg(packet.totalLen));
-    addTreeItem(itemFrame, "Arrival Time", time.toString("yyyy-MM-dd HH:mm:ss.zzz"));
-    QTreeWidgetItem *itemIP = addTreeItem(nullptr, "Internet Protocol Version 4");
-    addTreeItem(itemIP, "Source", packet.getSrcIpStr());
-    addTreeItem(itemIP, "Destination", packet.getDstIpStr());
+    PacketDetailRenderer::render(pkt, hexView, protoTree, lblSelectedInfo);
 }
 
 void TrafficMonitorPage::refreshTable() {
-    table->setUpdatesEnabled(false);
-    table->setRowCount(0);
-    m_localSeq = 0;
-
-    QString filterText = searchBox->text();
-    QString filterProto = comboProtocol->currentText();
-    bool hasProtoFilter = (filterProto != "全部协议");
-
-    for (const auto& packet : packetBuffer) {
-        bool match = true;
-        if (hasProtoFilter && QString(packet.protocol) != filterProto) match = false;
-
-        if (match && !filterText.isEmpty()) {
-            QString content = packet.getSrcStr() + packet.getDstStr() + QString(packet.protocol) + packet.getSummary();
-            if (!content.contains(filterText, Qt::CaseInsensitive)) match = false;
-        }
-
-        if (match) {
-            int row = table->rowCount();
-            table->insertRow(row);
-            m_localSeq++;
-
-            QDateTime time = QDateTime::fromMSecsSinceEpoch(packet.timestamp);
-
-            table->setItem(row, 0, new QTableWidgetItem(QString::number(m_localSeq)));
-            table->setItem(row, 1, new QTableWidgetItem(time.toString("HH:mm:ss.zzz")));
-            table->setItem(row, 2, new QTableWidgetItem(packet.getSrcStr()));
-            table->setItem(row, 3, new QTableWidgetItem(packet.getDstStr()));
-
-            QString protoStr = QString(packet.protocol);
-            auto *protoItem = new QTableWidgetItem(protoStr);
-            if (protoStr == "TCP") protoItem->setForeground(QColor(TrafficStyle::ColorTCP));
-            else if (protoStr == "UDP") protoItem->setForeground(QColor(TrafficStyle::ColorUDP));
-            else if (protoStr == "HTTP") protoItem->setForeground(QColor(TrafficStyle::ColorHTTP));
-            else if (protoStr == "TLS") protoItem->setForeground(QColor(TrafficStyle::ColorTLS));
-
-            table->setItem(row, 4, protoItem);
-            table->setItem(row, 5, new QTableWidgetItem(QString::number(packet.totalLen)));
-            table->setItem(row, 6, new QTableWidgetItem(packet.getSummary()));
-        }
-    }
-    if (chkAutoScroll->isChecked()) table->scrollToBottom();
-    table->setUpdatesEnabled(true);
+    proxyModel->setFilter(searchBox->text(), comboProtocol->currentText());
 }
 
 void TrafficMonitorPage::onFilterChanged() {
-    refreshTable();
+    filterDebounceTimer->start();
+}
+
+void TrafficMonitorPage::onThemeChanged() {
+    searchBox->setStyleSheet(TrafficStyle::getSearchBox());
+    comboProtocol->setStyleSheet(TrafficStyle::getComboBox());
+    chkAutoScroll->setStyleSheet(TrafficStyle::getCheckBox());
+    chkCollapse->setStyleSheet(TrafficStyle::getCheckBox());
+    btnPause->setStyleSheet(isPaused ? TrafficStyle::getBtnPaused() : TrafficStyle::getBtnNormal());
+    btnExport->setStyleSheet(TrafficStyle::getBtnNormal());
+    btnClear->setStyleSheet(TrafficStyle::getBtnDanger());
+    hexView->setStyleSheet(TrafficStyle::getHexViewStyle());
+    protoTree->setStyleSheet(TrafficStyle::ProtoTree);
+}
+
+bool TrafficMonitorPage::eventFilter(QObject *obj, QEvent *event) {
+    if (obj == tableView) {
+        if (event->type() == QEvent::Enter) {
+            hoverPaused = true;
+            return true;
+        } else if (event->type() == QEvent::Leave) {
+            hoverPaused = false;
+            return true;
+        }
+    }
+    return QWidget::eventFilter(obj, event);
 }

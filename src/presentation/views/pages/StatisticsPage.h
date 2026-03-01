@@ -9,6 +9,10 @@
 #include <QProgressBar>
 #include <QVBoxLayout>
 #include <QScrollArea>
+#include <QtCharts/QChartView>
+#include <QtCharts/QSplineSeries>
+#include <QtCharts/QValueAxis>
+#include <QtCharts/QAreaSeries>
 #include "common/types/NetworkTypes.h"
 
 class StatisticsPage : public QWidget {
@@ -16,17 +20,18 @@ class StatisticsPage : public QWidget {
 public:
     explicit StatisticsPage(QWidget *parent = nullptr);
     void addPacket(const ParsedPacket& packet);
-
     void updateThreatStats(const QString& type);
     void updateThroughput(uint64_t throughputBps);
     void setTheme(bool dark);
+    void onThemeChanged();
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void setupUi();
     void updateMetrics();
     void refreshLocalIps();
-    static QString formatBytes(double bytes);
 
     static constexpr int MAX_HISTORY = 60;
 
@@ -36,9 +41,14 @@ private:
         QLabel* percent = nullptr;
     };
 
-    // UI
     QWidget *contentWidget = nullptr;
-    QWidget *chartCanvas = nullptr;
+    QChartView *chartCanvas = nullptr;
+    QChart *trendChart = nullptr;
+    QSplineSeries *rxSeries = nullptr;
+    QSplineSeries *txSeries = nullptr;
+    QValueAxis *axisX = nullptr;
+    QValueAxis *axisY = nullptr;
+
     QWidget *topHostsContainer = nullptr;
     QVBoxLayout *topHostsLayout = nullptr;
 
@@ -74,6 +84,6 @@ private:
     QMap<QString, ProtoBarWidgets> protoBars;
     QMap<QString, int> threatCounts;
 
-    std::vector<double> rxSpeedHistory;
-    std::vector<double> txSpeedHistory;
+    QList<QPointF> rxBuffer;
+    QList<QPointF> txBuffer;
 };

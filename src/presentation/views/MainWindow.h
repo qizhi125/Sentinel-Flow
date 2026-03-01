@@ -1,20 +1,21 @@
 #pragma once
-
-#include <QMainWindow>
-#include <QStackedWidget>
-#include <QVBoxLayout>
-#include <QPushButton>
-#include <QList> // 🔥 引入 QList
-#include <vector> // 🔥 引入 vector
+#include "capture/interface/ICaptureDriver.h"
+#include "engine/pipeline/PacketPipeline.h"
+#include "common/queues/SPSCQueue.h"
+#include "common/types/NetworkTypes.h"
 #include "pages/DashboardPage.h"
 #include "pages/TrafficMonitorPage.h"
 #include "pages/AlertsPage.h"
 #include "pages/StatisticsPage.h"
 #include "pages/RulesPage.h"
 #include "pages/SettingsPage.h"
-#include "engine/pipeline/PacketPipeline.h" // 路径已更新
-#include "common/queues/ThreadSafeQueue.h"  // 路径已更新
-#include "common/types/NetworkTypes.h"      // 路径已更新
+#include "pages/ForensicPage.h"
+#include <QMainWindow>
+#include <QStackedWidget>
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QList>
+#include <vector>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -24,13 +25,16 @@ public:
     ~MainWindow() override;
 
 private slots:
-    void onPacketsProcessed(const QVector<ParsedPacket>& packets);
+    //void onPacketsReady(QSharedPointer<QVector<ParsedPacket>> packets);
+    void onPacketsProcessed(QSharedPointer<QVector<ParsedPacket>> packets);
     void onThreatDetected(const Alert& alert, const ParsedPacket& packet);
     void onStatsUpdated(uint64_t bytes);
+    void onThemeChanged(bool isDark);
 
 private:
     void setupUi();
     void setupSidebar();
+    void initSystemCore(int workerCount);
 
     QWidget *centralWidget;
     QHBoxLayout *mainLayout;
@@ -38,25 +42,26 @@ private:
     QVBoxLayout *sidebarLayout;
     QStackedWidget *contentStack;
 
-    // 页面指针
     DashboardPage *dashboardPage;
     TrafficMonitorPage *monitorPage;
     AlertsPage *alertsPage;
     StatisticsPage *statsPage;
     RulesPage *rulesPage;
     SettingsPage *settingsPage;
+    ForensicPage *forensicPage;
 
-    // 侧边栏按钮
     QPushButton *btnDashboard;
     QPushButton *btnMonitor;
     QPushButton *btnAlerts;
     QPushButton *btnStats;
     QPushButton *btnRules;
     QPushButton *btnSettings;
+    QPushButton *btnForensics;
 
-    // 🔥 [核心升级] 线程池与队列组
     QList<PacketPipeline*> pipelinePool;
-    std::vector<ThreadSafeQueue<RawPacket>*> workerQueues;
+    std::vector<sentinel::capture::PacketQueue*> workerQueues;
+
+    sentinel::capture::ICaptureDriver* m_captureDriver = nullptr;
 
     int totalAlertsSession = 0;
 };

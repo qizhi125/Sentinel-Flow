@@ -2,6 +2,7 @@
 #include <QtCharts/QChartView>
 #include <QtCharts/QSplineSeries>
 #include <QtCharts/QValueAxis>
+#include <QtCharts/QAreaSeries>
 #include <QList>
 #include <QPointF>
 

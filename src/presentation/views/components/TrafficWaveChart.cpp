@@ -2,6 +2,7 @@
 #include <QDateTime>
 #include <QPainter>
 #include <QLinearGradient>
+#include <QOpenGLWidget>
 
 TrafficWaveChart::TrafficWaveChart(QWidget *parent) : QChartView(parent) {
     setupChart();
@@ -18,10 +19,23 @@ void TrafficWaveChart::setupChart() {
     m_series->setPen(pen);
 
     m_chart->addSeries(m_series);
+
+    QAreaSeries *area = new QAreaSeries(m_series);
+    QLinearGradient grad(0, 0, 0, 1);
+    grad.setCoordinateMode(QGradient::ObjectBoundingMode);
+    grad.setColorAt(0.0, QColor(0, 191, 165, 80));
+    grad.setColorAt(1.0, Qt::transparent);
+    area->setBrush(grad);
+    area->setPen(Qt::NoPen);
+    m_chart->addSeries(area);
+
     m_chart->legend()->hide();
     m_chart->setTitle("");
+
     m_chart->setBackgroundBrush(Qt::NoBrush);
     m_chart->setPlotAreaBackgroundBrush(Qt::NoBrush);
+    this->setBackgroundBrush(Qt::NoBrush);
+
     m_chart->setAnimationOptions(QChart::NoAnimation);
 
     m_axisX = new QValueAxis();
@@ -29,14 +43,18 @@ void TrafficWaveChart::setupChart() {
     m_axisX->setLabelFormat("");
     m_axisX->setGridLineVisible(false);
     m_chart->addAxis(m_axisX, Qt::AlignBottom);
+
     m_series->attachAxis(m_axisX);
+    area->attachAxis(m_axisX);
 
     m_axisY = new QValueAxis();
     m_axisY->setLabelFormat("%.0f");
     m_axisY->setRange(0, 100);
     m_axisY->setGridLineColor(QColor("#333"));
     m_chart->addAxis(m_axisY, Qt::AlignLeft);
+
     m_series->attachAxis(m_axisY);
+    area->attachAxis(m_axisY);
 
     this->setChart(m_chart);
     this->setRenderHint(QPainter::Antialiasing);
@@ -78,6 +96,6 @@ void TrafficWaveChart::setTheme(bool isDark) {
     } else {
         m_axisY->setLabelsColor(QColor("#333"));
         m_axisY->setGridLineColor(QColor("#DDD"));
-        m_series->setPen(QPen(QColor("#007ACC"), 2));
+        m_series->setPen(QPen(QColor("#009688"), 2));
     }
 }

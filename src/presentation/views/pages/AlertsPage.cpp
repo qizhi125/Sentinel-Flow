@@ -1,5 +1,6 @@
 #include "presentation/views/pages/AlertsPage.h"
-#include "presentation/views/styles/AlertsStyle.h"
+#include "presentation/views/styles/global.h"
+#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -9,15 +10,30 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QTextStream>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QHostAddress>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QDir>
+#include <QTimer>
+#include <QDebug>
 
 AlertsPage::AlertsPage(QWidget *parent) : QWidget(parent) {
     setupUi();
+
+    uiRefreshTimer = new QTimer(this);
+    connect(uiRefreshTimer, &QTimer::timeout, this, [this]() {
+        if (isDirty) {
+            refreshTable();
+            isDirty = false;
+        }
+    });
+    uiRefreshTimer->start(500);
 }
 
 void AlertsPage::setupUi() {
@@ -31,112 +47,90 @@ void AlertsPage::setupUi() {
     searchBox = new QLineEdit();
     searchBox->setPlaceholderText("🔍 搜索: 规则名 / IP / 描述");
     searchBox->setFixedWidth(300);
-    searchBox->setStyleSheet(AlertsStyle::getSearchBox());
     connect(searchBox, &QLineEdit::textChanged, this, &AlertsPage::onFilterChanged);
 
     levelFilter = new QComboBox();
-    levelFilter->addItems({"全部等级", "严重 (Critical)", "高危 (High)", "中危 (Medium)", "低危 (Low)"});
-    levelFilter->setStyleSheet(AlertsStyle::getComboBox());
-    levelFilter->setFixedWidth(160);
+    levelFilter->addItems({"全部等级", "严重 (Critical)", "高危 (High)", "中危 (Medium)", "低危 (Low)", "信息 (Info)"});
+    levelFilter->setFixedWidth(150);
     connect(levelFilter, &QComboBox::currentIndexChanged, this, &AlertsPage::onFilterChanged);
 
-    btnExport = new QPushButton("📥 导出");
-    btnExport->setStyleSheet(AlertsStyle::getBtnNormal());
+    btnOpenPcapDir = new QPushButton("📂 打开取证目录");
+    connect(btnOpenPcapDir, &QPushButton::clicked, this, &AlertsPage::onOpenPcapDirClicked);
+
+    btnExport = new QPushButton("📥 导出报告");
     connect(btnExport, &QPushButton::clicked, this, &AlertsPage::onExportClicked);
 
     btnClear = new QPushButton("🗑 清空");
-    btnClear->setStyleSheet(AlertsStyle::getBtnNormal());
+    btnClear->setProperty("type", "danger");
     connect(btnClear, &QPushButton::clicked, this, &AlertsPage::onClearClicked);
 
     toolbar->addWidget(searchBox);
     toolbar->addWidget(levelFilter);
     toolbar->addStretch();
+    toolbar->addWidget(btnOpenPcapDir);
     toolbar->addWidget(btnExport);
     toolbar->addWidget(btnClear);
-
     mainLayout->addLayout(toolbar);
 
-    auto *splitter = new QSplitter(Qt::Horizontal);
+    auto *splitter = new QSplitter(Qt::Vertical);
     splitter->setHandleWidth(1);
 
-    alertTable = new QTableWidget();
-    alertTable->setColumnCount(4);
-    alertTable->setHorizontalHeaderLabels({"时间", "等级", "规则名称", "源IP"});
-    alertTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    alertTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    alertTable = new QTableWidget(0, 5);
+    alertTable->setHorizontalHeaderLabels({"时间", "级别", "规则名", "源 IP", "描述"});
+
     alertTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     alertTable->setSelectionMode(QAbstractItemView::SingleSelection);
     alertTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     alertTable->verticalHeader()->setVisible(false);
     alertTable->setShowGrid(false);
-    alertTable->setAlternatingRowColors(true);
-    alertTable->verticalHeader()->setDefaultSectionSize(36);
 
-    auto *detailWidget = new QWidget();
-    detailWidget->setObjectName("Card");
-    auto *detailLayout = new QVBoxLayout(detailWidget);
+    alertTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+    alertTable->setColumnWidth(0, 150);
+    alertTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    alertTable->setColumnWidth(1, 80);
+    alertTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    alertTable->setColumnWidth(2, 200);
+    alertTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    alertTable->setColumnWidth(3, 120);
+    alertTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
 
-    lblDetailTitle = new QLabel("选择告警查看详情");
-    lblDetailTitle->setStyleSheet(AlertsStyle::DetailTitle);
+    connect(alertTable->selectionModel(), &QItemSelectionModel::currentChanged, [this](const QModelIndex &current, const QModelIndex &){
+        if (current.isValid() && current.row() < (int)alertsBuffer.size()) {
+            updateDetailView(alertsBuffer[current.row()]);
+        }
+    });
+
+    splitter->addWidget(alertTable);
+
+    auto *detailContainer = new QWidget();
+    detailContainer->setObjectName("Card");
+    auto *vDetailLayout = new QVBoxLayout(detailContainer);
+
+    lblDetailTitle = new QLabel("告警详情");
+    lblDetailTitle->setProperty("role", "title");
+    vDetailLayout->addWidget(lblDetailTitle);
 
     txtDetailContent = new QTextEdit();
     txtDetailContent->setReadOnly(true);
-    txtDetailContent->setStyleSheet(AlertsStyle::PayloadBox);
+    vDetailLayout->addWidget(txtDetailContent);
 
-    detailLayout->addWidget(lblDetailTitle);
-    detailLayout->addWidget(txtDetailContent);
-
-    splitter->addWidget(alertTable);
-    splitter->addWidget(detailWidget);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
+    splitter->addWidget(detailContainer);
+    splitter->setStretchFactor(0, 6);
+    splitter->setStretchFactor(1, 4);
 
     mainLayout->addWidget(splitter);
-
-    connect(alertTable, &QTableWidget::itemClicked, [this](QTableWidgetItem *item) {
-            int alertIndex = item->data(Qt::UserRole).toInt();
-            if (alertIndex >= 0 && alertIndex < (int)alertsBuffer.size()) {
-                updateDetailView(alertsBuffer[alertIndex]);
-            }
-        });
 }
 
 void AlertsPage::addAlert(const Alert& alert) {
-    alertsBuffer.insert(alertsBuffer.begin(), alert);
+    alertsBuffer.push_front(alert);
     if (alertsBuffer.size() > 2000) alertsBuffer.pop_back();
-
-    bool isFiltersEmpty = searchBox->text().isEmpty() && levelFilter->currentIndex() == 0;
-    if (isFiltersEmpty) {
-        alertTable->insertRow(0);
-        QDateTime time = QDateTime::fromSecsSinceEpoch(alert.timestamp);
-        auto *itemTime = new QTableWidgetItem(time.toString("HH:mm:ss"));
-        itemTime->setData(Qt::UserRole, 0);
-        QString levelStr; int levelIdx = 3;
-        switch(alert.level) {
-        case Alert::Critical: levelStr="严重"; levelIdx=0; break;
-        case Alert::High:     levelStr="高危"; levelIdx=1; break;
-        case Alert::Medium:   levelStr="中危"; levelIdx=2; break;
-        case Alert::Low:      levelStr="低危"; levelIdx=3; break;
-        default:              levelStr="信息"; levelIdx=3; break;
-        }
-        auto *itemLevel = new QTableWidgetItem(levelStr);
-        itemLevel->setForeground(AlertsStyle::getLevelColor(levelIdx));
-        itemLevel->setFont(QFont("Inter", 15, QFont::Bold));
-
-        auto *itemRule = new QTableWidgetItem(QString::fromStdString(alert.ruleName));
-        auto *itemSrc = new QTableWidgetItem(QHostAddress(alert.sourceIp).toString());
-        alertTable->setItem(0, 0, itemTime);
-        alertTable->setItem(0, 1, itemLevel);
-        alertTable->setItem(0, 2, itemRule);
-        alertTable->setItem(0, 3, itemSrc);
-    } else {
-        refreshTable();
-    }
+    isDirty = true;
 }
 
 void AlertsPage::refreshTable() {
     alertTable->setUpdatesEnabled(false);
     alertTable->setRowCount(0);
+
     QString filterText = searchBox->text().toLower();
     int filterLevelIdx = levelFilter->currentIndex();
 
@@ -161,19 +155,22 @@ void AlertsPage::refreshTable() {
         int row = alertTable->rowCount();
         alertTable->insertRow(row);
         QDateTime time = QDateTime::fromSecsSinceEpoch(alert.timestamp);
-        auto *itemTime = new QTableWidgetItem(time.toString("HH:mm:ss"));
-        itemTime->setData(Qt::UserRole, (int)i);
 
-        QString levelStr; int levelColorIdx = 3;
+        auto *itemTime = new QTableWidgetItem(time.toString("HH:mm:ss"));
+        itemTime->setData(Qt::UserRole, static_cast<int>(i));
+
+        QString levelStr;
+        QColor levelColor;
         switch(alert.level) {
-            case Alert::Critical: levelStr="严重"; levelColorIdx=0; break;
-            case Alert::High:     levelStr="高危"; levelColorIdx=1; break;
-            case Alert::Medium:   levelStr="中危"; levelColorIdx=2; break;
-            case Alert::Low:      levelStr="低危"; levelColorIdx=3; break;
-            default:              levelStr="信息"; levelColorIdx=3; break;
+            case Alert::Critical: levelStr="严重"; levelColor = QColor(Style::ColorDanger()); break;
+            case Alert::High:     levelStr="高危"; levelColor = QColor(Style::ColorWarning()); break;
+            case Alert::Medium:   levelStr="中危"; levelColor = QColor(Style::ColorAccent()); break;
+            case Alert::Low:      levelStr="低危"; levelColor = QColor(Style::ColorNeutral()); break;
+            default:              levelStr="信息"; levelColor = QColor("#888888"); break;
         }
+
         auto *itemLevel = new QTableWidgetItem(levelStr);
-        itemLevel->setForeground(AlertsStyle::getLevelColor(levelColorIdx));
+        itemLevel->setForeground(levelColor);
         itemLevel->setFont(QFont("Inter", 15, QFont::Bold));
 
         auto *itemRule = new QTableWidgetItem(QString::fromStdString(alert.ruleName));
@@ -187,15 +184,49 @@ void AlertsPage::refreshTable() {
     alertTable->setUpdatesEnabled(true);
 }
 
-void AlertsPage::onFilterChanged() {
-    refreshTable();
-}
+void AlertsPage::onFilterChanged() { refreshTable(); }
 
 void AlertsPage::onClearClicked() {
     alertsBuffer.clear();
     refreshTable();
     txtDetailContent->clear();
     lblDetailTitle->setText("选择告警查看详情");
+    btnOpenPcapDir->hide();
+}
+
+void AlertsPage::onOpenPcapDirClicked() {
+    QString currentPath = QDir::currentPath() + "/evidences";
+    QDir().mkpath(currentPath);
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(currentPath))) {
+        QMessageBox::warning(this, "错误", "无法打开本地取证目录: \n" + currentPath);
+    }
+}
+
+void AlertsPage::updateDetailView(const Alert& alert) {
+    lblDetailTitle->setText(QString::fromStdString(alert.ruleName));
+    btnOpenPcapDir->setVisible(alert.level >= Alert::High);
+
+    QString t = QDateTime::fromSecsSinceEpoch(alert.timestamp).toString("yyyy-MM-dd HH:mm:ss");
+    QString ip = QHostAddress(alert.sourceIp).toString();
+    QString d = QString::fromStdString(alert.description).toHtmlEscaped();
+
+    QString textColor = g_isDarkMode ? "#E0E0E0" : "#111111";
+    QString boxBg     = g_isDarkMode ? "#111111" : "#F8F9FA";
+    QString boxBorder = g_isDarkMode ? "#333333" : "#CCCCCC";
+    QString boxText   = g_isDarkMode ? "#E6DB74" : "#111111";
+
+    QString html = QString(R"(
+        <div style="font-family: Inter, sans-serif; font-size: 14px; color: %1;">
+          <div style="margin-bottom: 15px;">
+            <div><span style="color:%2; font-weight:bold;">Time</span>: <b>%3</b></div>
+            <div><span style="color:%2; font-weight:bold;">Source</span>: <b>%4</b></div>
+          </div>
+          <div style="color:%2; font-weight:bold; margin-bottom:8px;">Description</div>
+          <pre style="white-space:pre-wrap; margin:0; padding:15px; background:%5; border:1px solid %6; border-radius:6px; color:%7; font-family:'JetBrains Mono'; font-weight:500;">%8</pre>
+        </div>
+    )").arg(textColor, Style::ColorAccent(), t, ip, boxBg, boxBorder, boxText, d);
+
+    txtDetailContent->setHtml(html);
 }
 
 void AlertsPage::onExportClicked() {
@@ -204,48 +235,80 @@ void AlertsPage::onExportClicked() {
         return;
     }
 
-    QString fileName = QFileDialog::getSaveFileName(this, "导出告警日志", "", "CSV 文件 (*.csv);;JSON 文件 (*.json)");
-    if (fileName.isEmpty()) return;
+    QString selectedFilter;
+    QString initialPath = QDir::homePath() + "/alert_export";
+    QString rawFileName = QFileDialog::getSaveFileName(this,
+                                                        "导出告警日志",
+                                                        initialPath,
+                                                        "CSV 文件 (*.csv);;JSON 文件 (*.json)",
+                                                        &selectedFilter,
+                                                        QFileDialog::DontUseNativeDialog);
 
-    QFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    if (rawFileName.isEmpty()) return;
+
+    QString finalFileName = rawFileName;
+    QFileInfo fi(rawFileName);
+
+    QString targetExt = selectedFilter.contains("json", Qt::CaseInsensitive) ? "json" : "csv";
+
+    if (fi.suffix().toLower() != targetExt) {
+        finalFileName = fi.absolutePath() + "/" + fi.completeBaseName() + "." + targetExt;
+    }
+
+    QFile file(finalFileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "错误", QString("无法创建文件，请确认权限：\n%1").arg(finalFileName));
+        return;
+    }
 
     QTextStream out(&file);
-    if (fileName.endsWith(".json", Qt::CaseInsensitive)) {
-        QJsonArray jsonArray;
+    out.setEncoding(QStringConverter::Utf8);
+
+    auto getLevelName = [](Alert::Level level) -> QString {
+        switch (level) {
+            case Alert::Critical: return "严重";
+            case Alert::High:     return "高危";
+            case Alert::Medium:   return "中危";
+            case Alert::Low:      return "低危";
+            default:              return "信息";
+        }
+    };
+
+    if (finalFileName.endsWith(".json", Qt::CaseInsensitive)) {
+        QJsonArray rootArray;
         for (const auto& alert : alertsBuffer) {
             QJsonObject obj;
-            obj["timestamp"] = static_cast<qint64>(alert.timestamp);
-            obj["rule"] = QString::fromStdString(alert.ruleName);
-            obj["src"] = QHostAddress(alert.sourceIp).toString();
-            obj["level"] = static_cast<int>(alert.level);
-            obj["desc"] = QString::fromStdString(alert.description);
-            jsonArray.append(obj);
+            obj["timestamp"] = (double)alert.timestamp;
+            obj["level"] = getLevelName(alert.level);
+            obj["ruleName"] = QString::fromStdString(alert.ruleName);
+            obj["sourceIp"] = QHostAddress(alert.sourceIp).toString();
+            obj["description"] = QString::fromStdString(alert.description);
+            rootArray.append(obj);
         }
-        out << QJsonDocument(jsonArray).toJson();
-    } else {
-        out << "\xEF\xBB\xBF";
-        out << "Time,Level,Rule,Source IP,Description\n";
+        out << QJsonDocument(rootArray).toJson(QJsonDocument::Indented);
+    }
+    else {
+        out << "No.,Time,Level,RuleName,SourceIP,Description\n";
+        int count = 1;
         for (const auto& alert : alertsBuffer) {
-            QString levelStr = (alert.level == Alert::Critical) ? "Critical" :
-                               (alert.level == Alert::High) ? "High" : "Normal";
-            out << QDateTime::fromSecsSinceEpoch(alert.timestamp).toString("yyyy-MM-dd HH:mm:ss") << ","
-                << levelStr << ","
-                << QString::fromStdString(alert.ruleName) << ","
-                << QHostAddress(alert.sourceIp).toString() << ",\""
-                << QString::fromStdString(alert.description).replace("\"", "\"\"") << "\"\n";
+            QString timeStr = QDateTime::fromSecsSinceEpoch(alert.timestamp).toString("yyyy-MM-dd HH:mm:ss");
+            QString desc = QString::fromStdString(alert.description).replace("\"", "\"\"");
+            out << count++ << "," << timeStr << "," << getLevelName(alert.level) << ","
+                << QString::fromStdString(alert.ruleName) << "," << QHostAddress(alert.sourceIp).toString() << ","
+                << "\"" << desc << "\"\n";
         }
     }
+
+    out.flush();
     file.close();
-    QMessageBox::information(this, "成功", "告警日志已导出！");
+
+    QMessageBox::information(this, "导出成功", QString("文件已锁定并保存至：\n%1").arg(finalFileName));
 }
 
-void AlertsPage::updateDetailView(const Alert& alert) {
-    lblDetailTitle->setText(QString::fromStdString(alert.ruleName));
-    QString html = AlertsStyle::getDetailHtml(
-        QDateTime::fromSecsSinceEpoch(alert.timestamp).toString("yyyy-MM-dd HH:mm:ss"),
-        QHostAddress(alert.sourceIp).toString(),
-        QString::fromStdString(alert.description)
-    );
-    txtDetailContent->setHtml(html);
+void AlertsPage::onThemeChanged() {
+    if (alertTable->selectedItems().size() > 0) {
+        int row = alertTable->currentRow();
+        int alertIndex = alertTable->item(row, 0)->data(Qt::UserRole).toInt();
+        updateDetailView(alertsBuffer[alertIndex]);
+    }
 }

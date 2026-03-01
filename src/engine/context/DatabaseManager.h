@@ -1,4 +1,6 @@
 #pragma once
+#include "common/types/NetworkTypes.h"
+#include "engine/flow/SecurityEngine.h"
 #include <string>
 #include <vector>
 #include <sqlite3.h>
@@ -7,7 +9,6 @@
 #include <condition_variable>
 #include <queue>
 #include <atomic>
-#include "common/types/NetworkTypes.h"
 
 class DatabaseManager {
 public:
@@ -18,6 +19,19 @@ public:
 
     void saveAlert(const Alert& alert);
     std::vector<Alert> loadRecentAlerts(int limit = 100);
+
+    void saveRule(const IdsRule& rule);
+    void saveRulesTransaction(const std::vector<IdsRule>& rulesList);
+    void deleteRule(int id);
+    void clearRules();
+    std::vector<IdsRule> loadRules();
+
+    void saveBlacklist(const std::string& ip, const std::string& reason);
+    void deleteBlacklist(const std::string& ip);
+    std::vector<std::pair<std::string, std::string>> loadBlacklist();
+
+    void saveConfig(const std::string& key, const std::string& value);
+    std::string loadConfig(const std::string& key, const std::string& defaultVal = "");
 
 private:
     DatabaseManager() = default;

@@ -1,29 +1,47 @@
 #pragma once
 #include <QWidget>
 #include <QLabel>
-#include <QListWidget>
+#include <QTextEdit>
 #include <QTimer>
 #include <QPainter>
 #include <QProgressBar>
-#include <vector>
+#include <QtCharts/QChartView>
+#include <QtCharts/QScatterSeries>
+#include <QtCharts/QCategoryAxis>
+#include <QtCharts/QDateTimeAxis>
+#include <deque>
 
-struct RadarBlip {
-    int angle;
-    float opacity;
-    QColor color;
+struct ThreatEvent {
+    qint64 timestamp;  // 毫秒
+    QString severity;  // "CRITICAL", "HIGH", "MEDIUM", "LOW"
 };
 
-class RadarWidget : public QWidget {
+class ThreatTimelineWidget : public QChartView {
     Q_OBJECT
 public:
-    explicit RadarWidget(QWidget *parent = nullptr);
-    void addBlip(const QString& sourceIp, const QString& severity);
+    explicit ThreatTimelineWidget(QWidget *parent = nullptr);
+    void addEvent(const ThreatEvent& event);
+    void clear();
+    void setTheme(bool isDark);
+
 protected:
-    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+
 private:
-    QTimer *scanTimer;
-    int scanAngle = 0;
-    std::vector<RadarBlip> blips;
+    void setupChart();
+    void updateAxisRange();
+
+    QChart *m_chart;
+    QScatterSeries *m_seriesCritical;
+    QScatterSeries *m_seriesHigh;
+    QScatterSeries *m_seriesMedium;
+    QScatterSeries *m_seriesLow;
+    QDateTimeAxis *m_axisX;
+    QCategoryAxis *m_axisY;
+
+    std::deque<ThreatEvent> m_events;
+    static constexpr int MAX_EVENTS = 100;
+    static constexpr int TIME_WINDOW_MS = 60000; // 1分钟
 };
 
 class DashboardPage : public QWidget {
@@ -37,11 +55,21 @@ public:
     void triggerRadarAlert(const QString& sourceIp, const QString& severity);
     void setTheme(bool isDark);
 
+public slots:
+    void onThemeChanged();
+
 private:
     void setupUi();
     double getRealCpuUsage();
     double getRealRamUsage();
     double getDiskUsage();
+
+    void calculateDynamicScore();
+    std::deque<ThreatEvent> m_slidingWindowAlerts;
+    static constexpr int SCORE_WINDOW_MS = 60000;
+
+    double m_currentHealthScore = 100.0;
+
     unsigned long long prevIdle = 0;
     unsigned long long prevTotal = 0;
 
@@ -49,8 +77,8 @@ private:
     QLabel *lblThreatLevel;
     QLabel *lblActiveProtections;
 
-    RadarWidget *radarWidget;
-    QListWidget *activityList;
+    ThreatTimelineWidget *threatTimeline;
+    QTextEdit *activityConsole;
 
     QLabel *lblServiceDB;
     QLabel *lblServiceAI;
