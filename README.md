@@ -1,121 +1,83 @@
-# Sentinel-Flow : 高性能网络流量分析与防御系统
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Standard-C++20-blue.svg" alt="C++20">
-  <img src="https://img.shields.io/badge/GUI-Qt%206.x-41CD52.svg" alt="Qt6">
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg" alt="Platform">
-  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-</p>
+# Sentinel-Flow v1.0
 
 ## 项目简介
 
-Sentinel-Flow 是一个网络流量分析与入侵检测系统。
-底层基于 C++20 与 `libpcap`，采用单生产者单消费者无锁队列进行跨线程数据调度；前端基于 Qt6 构建视图层。系统设计侧重于减少热路径上的内存分配与系统调用，以支持高吞吐量环境下的流量检测与分析。
+Sentinel-Flow 是一个基于 Linux 平台的万兆级网络流量分析与安全监测系统。项目采用 C++20 标准开发，利用 Qt6 构建图形用户界面，底层使用 Libpcap 进行数据包捕获。
 
----
+该系统旨在提供实时的网络态势感知能力，主要功能包括深度协议解析、实时流量监控、基于 Aho-Corasick 自动机的入侵检测 (IDS) 以及高危报文的异步取证。
 
-## 视觉交互
+## 系统架构 (Hyper-Exchange v1.0)
 
-<details>
-<summary><b>1. 态势感知大屏</b> - 实时波形图与统计雷达</summary>
-<img src="docs/assets/screenshot_dashboard.png" alt="Dashboard">
-</details>
-
-<details>
-<summary><b>2. 实时流量监控</b> - 虚拟列表与业务层探测</summary>
-<img src="docs/assets/screenshot_monitor.png" alt="Traffic Monitor">
-</details>
-
-<details>
-<summary><b>3. 离线流量取证</b> - 协议树与 16 进制数据转储</summary>
-<img src="docs/assets/screenshot_forensic.png" alt="Forensic Analysis">
-</details>
-
----
-
-## 核心特性
-
-- **极低延迟的无锁流水线**
-  - 弃用常规锁机制，底层基于 `std::atomic` 与内存序 (`acquire/release`) 构建单生产者单消费者环形队列。通过 `alignas(64)` 隔离读写游标消除伪共享，消费侧实装 Spin-Yield-Sleep 混合退避机制。
-- **抗 OOM 的零拷贝内存池**
-  - 基于 Tagged Pointer 机制实现无锁空闲链表。结合自定义 Deleter 的 `std::unique_ptr`，数据包物理内存从捕获探针到 Qt 虚拟列表视图实现全链路生命周期托管。
-- **多模式特征匹配**
-  - 采用 Aho-Corasick 自动机替代正则表达式。树节点使用大小为 256 的数组进行 $O(1)$ 状态转移，匹配时间复杂度仅与数据包载荷长度成正比，独立于装载的规则数量。
-- **视图与数据解析解耦**
-  - 业务逻辑与 UI 渲染分离。解析后的数据被组装为 `QVector`，通过 Qt 的跨线程事件队列传递给虚拟列表模型，避免界面重绘阻塞数据面管线。
-- **动态提权与进程重载**
-  - 启动时探测 `AF_PACKET` 权限。若缺乏特权，则通过 `fork` 调起 `sudo setcap cap_net_raw,cap_net_admin=eip` 赋予二进制文件 Capabilities，随后调用 `execv` 重载进程镜像，避免直接以 root 运行引发的 GUI 显示拒绝问题。
-- **跨平台与离线模式**
-  - 启动支持 `--cli` 和 `--gui` 模式切换。通过 `#ifdef __linux__` 隔离系统调用。在无网卡权限或非 Linux 环境下，系统跳过物理接口绑定，退化为纯 `.pcap` 文件解析模式。
-
----
-
-## 系统架构 (Hyper-Exchange Architecture)
-
-数据流向严格遵循**单向数据流与零拷贝**原则：
+项目遵循严格的分层设计与 MVC 架构，核心数据流向如下：
 
 ```mermaid
 graph TD
-    Capture[底层网卡 Capture] -->|借用 ObjectPool 内存| SPSC[SPSC 无锁环形队列]
-    SPSC -->|原子 Pop| Engine[Pipeline 多核解析引擎]
-    Engine -->|AC 自动机检测| IDS[SecurityEngine 安全大脑]
-    IDS -->|异步批处理| SQLite[(WAL 高速数据库)]
-    Engine -->|批量智能指针 QVector| UI[Qt6 虚拟列表展示层]
-    
-    style Capture fill:#2c3e50,stroke:#34495e,color:#fff
-    style SPSC fill:#c0392b,stroke:#e74c3c,color:#fff
-    style Engine fill:#2980b9,stroke:#3498db,color:#fff
-    style SQLite fill:#27ae60,stroke:#2ecc71,color:#fff
-    style UI fill:#8e44ad,stroke:#9b59b6,color:#fff
+    Capture[捕获层 Capture] -->|"原始包 Raw Packet"| Common[基础设施层 Common]
+    Common -->|"SPSC 无锁队列"| Engine[引擎层 Engine]
+    Engine -->|"QSharedPointer 批量信号"| UI[表现层 Presentation]
 ```
 
-------
+- **捕获层**: 封装 `libpcap`，负责从网卡获取二进制数据，并打上内核级纳秒时间戳。
+- **基础设施层**: 提供无锁对象池 (`ObjectPool`)、单生产者单消费者无锁环形队列 (`SPSCQueue`)。
+- **引擎层**: 包含核心绑定的多线程解析管线 (`PacketPipeline`) 和基于 AC 自动机的安全检测引擎 (`SecurityEngine`)。
+- **表现层**: 基于 Qt6 MVC 架构的可视化界面，使用虚拟列表 (`TrafficTableModel`) 支撑海量数据无阻塞渲染。
 
-## 构建与安装
+## 核心技术点
 
-### 1. 环境依赖 (以 Fedora Linux 为例)
+1. **极致内存管理**: 基于无锁链表 (Lock-free List) 的对象池 (`ObjectPool`)，彻底规避热路径上的 `new/delete` 所带来的堆内存碎片和锁竞争。
+2. **多核无锁管线**: 摒弃传统的互斥锁队列，采用 `SPSCQueue` + 线程 CPU 亲和性 (Core Affinity) 绑定，实现极低延迟的数据包吞吐。
+3. **O(N) 多模式匹配**: 检测引擎内核集成 Aho-Corasick (AC) 自动机，支持 256 宽度的状态转移数组，流量检测耗时与规则数量完全解耦。
+4. **MVC 高性能渲染**: UI 层摒弃低效的 `QTableWidget`，采用 `QAbstractTableModel` 底层对接 `std::deque` 缓冲池。即使面对 10万+ 报文，界面依然保持 60 FPS 的极致顺滑。
 
-```bash
+## 环境依赖
+
+- **操作系统**: Fedora Linux 42/43 (或兼容的 Linux 发行版)
+- **编译器**: GCC 15+ (支持 C++20)
+- **构建工具**: CMake 3.20+
+- **依赖库**:
+  - Qt 6.x (Core, Gui, Widgets, Network, Charts)
+  - libpcap-devel
+  - sqlite-devel
+
+## 构建与运行
+
+### 1. 安装依赖 (Fedora 环境)
+
+在终端中执行以下命令安装所有必需的开发库：
+
+```Bash
+sudo dnf update -y
 sudo dnf install -y qt6-qtbase-devel qt6-qtcharts-devel libpcap-devel sqlite-devel cmake gcc-c++
 ```
 
-### 2. 极速编译
+### 2. 编译项目
 
-项目采用 CMake 构建，默认全量开启 `-O3` 优化：
+进入项目根目录，创建 Release 构建目录并进行编译：
 
 ```Bash
-mkdir build && cd build
+mkdir cmake-build-release && cd cmake-build-release
 cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 ```
 
-## 运行与权限策略
+### 3. 权限与运行策略
 
-Sentinel-Flow 遵循**最小权限原则 (Principle of Least Privilege)**。 直接以普通用户身份运行编译出的二进制文件即可，**系统会自动唤起引导菜单并请求动态提权**：
+由于涉及网卡混杂模式抓包，程序需要底层网络嗅探权限。 **推荐方案**：使用 `setcap` 赋予二进制文件权限，这样可以直接以普通用户身份运行，体验最佳且最安全：
 
-```Bash
+```bash
 ./cmake-build-debug/SentinelApp
 ```
 
-**交互式引导流体验：**
+⚠️ **关于 Sudo 运行时的黑屏问题 (Known Issue)**： 如果在 Wayland/X11 桌面环境下使用 `sudo` 或 `sudo -E` 强制提权运行 GUI 程序，将导致普通用户的 OpenGL 硬件渲染上下文丢失，引发**窗口内部完全黑屏**。 **解决方案**：v6.0 版本已在 `main.cpp` 入口处强制注入 `QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);`，通过软件渲染降级完美规避了此环境隔离问题，无论以何种权限启动均可正常渲染。
 
+## 最新架构演进 (v6.0 核心更新)
 
-1. 选择 [1] GUI 图形大屏 或 [2] CLI 终端守护进程。 
-2. 若探测到底层网卡特权缺失，系统请求提权。 
-3. 输入密码后，系统通过 setcap 注入网卡嗅探特权并热重载。
-4. (若拒绝提权或在非 Linux 环境，将进入离线 PCAP 分析模式)。
+- **生命周期重构**: 修复了严重的 UI 挂载空指针问题，确立了 `页面实例化 -> setupUi -> AC树编译 -> 管线启动` 的严格时序屏障。
+- **跨线程零拷贝**: 全局注册 `ParsedPacket` 与 `QSharedPointer` 元类型，通过批量信号投递彻底解决跨线程的深拷贝性能损耗。
+- **AC 自动机内存加固**: 采用 `std::unique_ptr` 统一接管匹配节点，根绝内存泄漏与 UAF (Use-After-Free) 漏洞。
+- **并发锁降级**: 黑名单与规则引擎全面采用 `std::shared_mutex` (读写锁)，极大提升读多写少场景的并发性能。
+- **异步取证无阻塞**: 告警触发的 PCAP 存盘操作完全交由 `ForensicWorker` 后台异步执行，绝不占用网络解析时间片。
 
-## 数据与存储
+## 许可证
 
-- 异步持久化：采用 SQLite WAL (Write-Ahead Logging) 模式配合 synchronous=NORMAL。引擎层触发的告警通过独立的 Worker 线程与 std::condition_variable 队列进行异步落盘，以 BEGIN IMMEDIATE/COMMIT 聚合千条事务，避免 I/O 阻塞主解析流水线。
-
-- 内存防洪：告警存储队列硬编码 20,000 条背压上限，防止恶劣网络环境下的级联 OOM 崩溃。
-
-## 文档导航
-
-详细的架构原理、数据流与运维指南，请参阅 `docs/` 目录：
-
-- 🧠 **[核心架构说明](docs/architecture/ARCHITECTURE.md)**：包含总体架构图、并发模型与 CPU 亲和性策略。
-- 🔄 **[数据生命周期](docs/architecture/DATA_FLOW.md)**：数据包的内存借用、无锁分流与零拷贝流转路径。
-- 🖧 **[捕获与内存池](docs/capture/)**：网卡调优方案与 ObjectPool 设计细节。
-- 🛡️ **[IDS 检测引擎](docs/engine/)**：解析流水线、AC 自动机构建过程与 Snort 规则兼容。
+本项目暂仅供学术交流与毕业设计使用。

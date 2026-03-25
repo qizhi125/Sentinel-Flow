@@ -1,148 +1,42 @@
-# 源码与工程目录规范
+# 源码目录规范 (Directory Structure)
 
-本项目代码结构严格遵循**领域驱动与模块隔离**原则。`src/` 目录下的物理隔离直接映射了系统的逻辑架构边界，所有代码提交必须符合本文档定义的单向依赖准则。
-
-## 完整目录树
+`src/` 目录严格按照 **功能分层 (Layered Architecture)** 组织，确保数据流向清晰、模块高度解耦。当前的 v6.0 架构全面拥抱了无锁并发与 MVC 视图分离。
 
 ```text
-Sentinel-Flow/
-├── docs/                              # [文档工程] 领域驱动的架构规范书
-│   ├── architecture/                  # 核心架构拓扑与数据流生命周期
-│   ├── capture/                       # 底层网卡与内存池设计机制
-│   ├── engine/                        # IDS 匹配引擎与管线细节
-│   ├── operations/                    # 运维指南与性能调优
-│   ├── presentation/                  # 前端渲染与 CLI 守护进程
-│   ├── storage/                       # 持久化与取证文件生成
-│   ├── DIRECTORY_STRUCTURE.md         # 本文件
-│   └── ROADMAP.md                     # 演进路线图
+src/
+├── common/                  # [通用层] 共享类型、工具、无锁并发原语
+│   ├── memory/              # 内存管理 (ObjectPool 无锁对象池)
+│   ├── queues/              # 队列机制 (SPSCQueue 无锁单产单消队列, ThreadSafeQueue)
+│   ├── types/               # 纯数据结构 (RawPacket, ParsedPacket, Alert 等)
+│   └── utils/               # 公共工具类 (StringUtils 等)
 │
-├── src/                               # 源代码根目录
-│   ├── main.cpp                       # 唯一入口点，调用 SentinelLauncher
-│   │
-│   ├── common/                        # [基础层] 跨模块共享的基础设施
-│   │   ├── memory/                    # 无锁内存池
-│   │   │   └── ObjectPool.h
-│   │   ├── queues/                    # 无锁队列
-│   │   │   └── SPSCQueue.h
-│   │   ├── types/                     # 全局数据结构定义
-│   │   │   └── NetworkTypes.h         # RawPacket, ParsedPacket, Alert, PacketPool
-│   │   └── utils/                     # 工具函数集合
-│   │       └── StringUtils.h          # 字符串处理、十六进制转储、格式化
-│   │
-│   ├── capture/                       # [捕获层] 数据面起点
-│   │   ├── driver/                    # 驱动接口定义与预留实现
-│   │   │   └── EBPFCapture.h          # eBPF 驱动占位
-│   │   ├── impl/                      # 实际捕获引擎
-│   │   │   ├── PcapCapture.cpp
-│   │   │   └── PcapCapture.h
-│   │   └── interface/                 # 统一捕获接口
-│   │       └── ICaptureDriver.h
-│   │
-│   ├── engine/                        # [引擎层] 核心检测与解析逻辑
-│   │   ├── context/                   # 持久化上下文
-│   │   │   ├── DatabaseManager.cpp
-│   │   │   └── DatabaseManager.h
-│   │   ├── flow/                      # 协议解析与安全检测
-│   │   │   ├── AhoCorasick.h
-│   │   │   ├── PacketParser.cpp
-│   │   │   ├── PacketParser.h
-│   │   │   ├── SecurityEngine.cpp
-│   │   │   └── SecurityEngine.h
-│   │   ├── governance/                # 审计与日志
-│   │   │   └── AuditLogger.h
-│   │   ├── interface/                 # 检测接口定义
-│   │   │   └── IInspector.h
-│   │   ├── pipeline/                  # 解析流水线
-│   │   │   ├── PacketPipeline.cpp
-│   │   │   └── PacketPipeline.h
-│   │   └── workers/                   # 后台工作线程
-│   │       ├── ForensicWorker.h       # 取证文件写入
-│   │       └── WorkerBase.h           # 工作线程基类
-│   │
-│   └── presentation/                  # [表现层] 控制面与 UI 渲染
-│       ├── app/                       # 应用程序入口与权限提升
-│       │   ├── SentinelLauncher.cpp
-│       │   └── SentinelLauncher.h
-│       ├── cli/                       # 终端守护进程 (ncurses / ANSI)
-│       │   ├── CliEngineManager.cpp
-│       │   └── CliEngineManager.h
-│       ├── controllers/               # 控制器（预留）
-│       │   └── MainController.h
-│       ├── models/                    # 数据模型
-│       │   └── TrafficModel.h
-│       └── views/                     # 视图组件
-│           ├── components/            # 可复用 UI 组件
-│           │   ├── BpfHighlighter.cpp
-│           │   ├── BpfHighlighter.h
-│           │   ├── PacketDetailRenderer.cpp
-│           │   ├── PacketDetailRenderer.h
-│           │   ├── StatCard.cpp
-│           │   ├── StatCard.h
-│           │   ├── TrafficTableModel.cpp
-│           │   ├── TrafficTableModel.h
-│           │   ├── TrafficWaveChart.cpp
-│           │   ├── TrafficWaveChart.h
-│           │   ├── UIFactory.cpp
-│           │   └── UIFactory.h
-│           ├── pages/                 # 主界面各页面
-│           │   ├── AlertsPage.cpp
-│           │   ├── AlertsPage.h
-│           │   ├── DashboardPage.cpp
-│           │   ├── DashboardPage.h
-│           │   ├── ForensicPage.cpp
-│           │   ├── ForensicPage.h
-│           │   ├── RulesPage.cpp
-│           │   ├── RulesPage.h
-│           │   ├── SettingsPage.cpp
-│           │   ├── SettingsPage.h
-│           │   ├── StatisticsPage.cpp
-│           │   ├── StatisticsPage.h
-│           │   ├── TrafficMonitorPage.cpp
-│           │   ├── TrafficMonitorPage.h
-│           │   └── rules/            # 规则管理子页面
-│           │       ├── IdsRulesTab.cpp
-│           │       └── IdsRulesTab.h
-│           ├── styles/                # 主题与样式定义
-│           │   ├── global.h
-│           │   ├── StatisticsStyle.h
-│           │   ├── ThemeDefinitions.h
-│           │   ├── ThemeManager.h
-│           │   └── TrafficMonitorStyle.h
-│           ├── MainWindow.cpp
-│           └── MainWindow.h
+├── capture/                 # [第一层：捕获层] 负责从底层网卡获取原始数据报文
+│   ├── driver/              # 底层高性能驱动预留 (如未来的 EBPFCapture)
+│   ├── impl/                # 捕获接口的具体实现 (PcapCapture)
+│   └── interface/           # 捕获层抽象基类 (ICaptureDriver)
 │
-└── tests/                             # 单元测试与基准测试用例 (待完善)
-    └── CMakeLists.txt                 # 测试构建文件
+├── engine/                  # [第二层：引擎层] 协议解析、安全检测与核心调度逻辑
+│   ├── context/             # 全局状态与持久化 (DatabaseManager, ForensicManager)
+│   ├── flow/                # 业务流与深度检测 (PacketParser, SecurityEngine, AhoCorasick)
+│   ├── governance/          # 系统治理与监控 (AuditLogger)
+│   ├── interface/           # 引擎标准化接口 (IInspector)
+│   ├── pipeline/            # 核心绑定的高性能调度管线 (PacketPipeline)
+│   └── workers/             # 异步后台辅助任务 (ForensicWorker)
+│
+└── presentation/            # [第三层：表现层] 基于 Qt6 的 MVC 可视化交互界面
+    ├── controllers/         # 控制器层：处理复杂的视图间业务逻辑转移 (MainController)
+    ├── models/              # 模型层：负责后台高频数据的聚合与降频抽象 (TrafficModel)
+    └── views/               # 视图层：具体的 UI 窗体与绘图组件
+        ├── components/      # 高复用性的独立可视化组件 (TrafficTableModel 虚拟列表等)
+        ├── pages/           # 按业务切分的独立子页面 (DashboardPage, TrafficMonitorPage 等)
+        ├── styles/          # 动态深色模式控制器与 QSS 样式表资源 (ThemeManager)
+        └── MainWindow.cpp/.h # 全局主窗口，负责路由、布局挂载与页面生命周期管理
+
 ```
 
-## 架构开发准则
+## 开发准则 (Master Rules)
 
-任何对 `src/` 的代码合并请求 (PR)，必须接受以下四项物理隔离约束的 Code Review：
+1. **依赖单向流动 (Unidirectional Dependency)** `presentation` -> `engine` -> `capture` -> `common`。严禁发生反向调用或环形依赖。表现层必须通过接口或跨线程信号 (`QSharedPointer`) 被动接收引擎数据。
+2. **UI 物理隔离 (UI Isolation)** `engine/` 和 `capture/` 目录下严禁 `#include` 任何 `<QWidget>`、`<QChart>` 或 GUI 相关的 Qt 模块。引擎层只负责处理 `std::vector` 和原生数据类型。
+3. **内存热路径禁区 (Hot-Path Strictness)** 在 `capture/impl` 和 `engine/pipeline` 的核心数据流循环中，严禁使用 `new/delete`、`std::string` 的动态拼接，以及任何会导致线程阻塞的同步原语（如 `std::mutex`、I/O 系统调用）。必须绝对依赖 `ObjectPool` 和 `SPSCQueue`。
 
-### 1. 严格的单向依赖
-
-- **准则**：`presentation` → `engine` → `capture` / `common`。
-- **红线**：底层模块绝对不可感知上层模块。在 `engine/` 或 `capture/` 层中，严禁出现 `#include <QWidget>` 或任何 `presentation/` 目录下的头文件。
-
-### 2. 热路径零分配
-
-- **准则**：在 `capture/` 和 `engine/pipeline/` 的数据包接收和解析主循环（数据面）中，所有内存必须通过 `PacketPool::instance().acquire()` 借用。
-- **红线**：严禁在万兆处理管线中直接调用 `new`、`malloc` 或引发 `std::vector` 的深拷贝扩容，违者将导致严重的系统级中断和 OOM。
-
-### 3. 数据面锁静默
-
-- **准则**：跨线程的报文流转必须且只能通过 `common/queues/SPSCQueue` 完成。
-- **红线**：在处理实际网络流量的 Worker 线程中，严禁引入 `std::mutex`、`std::shared_mutex` 或任何会触发内核态 Futex 阻塞的同步原语。仅允许使用 C++20 `std::atomic` 配合确定的内存序进行自旋同步。
-
-### 4. 视图组件 DRY 原则
-
-- **准则**：所有在业务主窗体 (Pages) 中复用的 L2-L7 协议树、Hex 视图或统计图表，必须下沉抽象至 `presentation/views/components/`，通过工厂或静态渲染器（如 `PacketDetailRenderer`）统一调用。
-```
-
----
-
-更新说明：
-1. 补充了 `common/utils/`、`engine/governance/`、`engine/interface/`、`engine/workers/` 等目录。
-2. 完善了 `presentation/` 下所有子目录，包括 `cli/`、`controllers/`、`models/`、`views/` 的详细文件。
-3. 保持原有“架构开发准则”不变，并增加一项“视图组件 DRY 原则”作为第四条。
-4. 调整了目录树的缩进和注释，使之与实际结构一致。
