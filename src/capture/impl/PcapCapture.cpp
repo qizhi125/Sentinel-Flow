@@ -5,9 +5,6 @@
 #include <cstring>
 #include <shared_mutex>
 
-static pcap_t* handle = nullptr;
-static char errbuf[PCAP_ERRBUF_SIZE];
-
 PcapCapture::~PcapCapture() {
     stop();
 }
@@ -53,6 +50,9 @@ int PcapCapture::hashPacket(const uint8_t* data, int len, uint32_t offset) {
 }
 
 void PcapCapture::captureLoop() {
+    pcap_t* localHandle = nullptr;
+    char errbuf[PCAP_ERRBUF_SIZE];
+
     {
         std::unique_lock lock(handleMutex);
         handle = pcap_open_live(currentDevice.c_str(), BUFSIZ, 1, 1000, errbuf);
@@ -61,6 +61,7 @@ void PcapCapture::captureLoop() {
             running = false;
             return;
         }
+        handle = localHandle;
     }
 
     uint32_t linkOffset = 14;
@@ -74,7 +75,14 @@ void PcapCapture::captureLoop() {
 
     while (running) {
         int res = pcap_next_ex(handle, &header, &pkt_data);
-        if (res <= 0) continue;
+        if (res == -1) {
+            if (!running) break;
+            std::cerr << "⚠️ [PcapCapture] pcap_next_ex 错误: " << pcap_geterr(localHandle) << std::endl;
+            continue;
+        }
+        if (res == 0) {
+            continue;
+        }
 
         uint32_t caplen = std::min<uint32_t>(header->caplen, (uint32_t)MAX_PACKET_SIZE);
 
@@ -127,6 +135,7 @@ bool PcapCapture::setFilter(const std::string& filterExp) {
 std::vector<std::string> PcapCapture::getDeviceList() {
     std::vector<std::string> devs;
     pcap_if_t *alldevs, *d;
+    char errbuf[PCAP_ERRBUF_SIZE];
     if (pcap_findalldevs(&alldevs, errbuf) == 0) {
         for (d = alldevs; d; d = d->next)
             devs.push_back(d->name);

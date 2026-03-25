@@ -1,4 +1,10 @@
 #pragma once
+#include "common/types/NetworkTypes.h"
+#include <QtCharts/QChartView>
+#include <QtCharts/QSplineSeries>
+#include <QtCharts/QValueAxis>
+#include <QtCharts/QAreaSeries>
+#include "ThemeablePage.h"
 #include <QWidget>
 #include <QLabel>
 #include <QTimer>
@@ -9,21 +15,16 @@
 #include <QProgressBar>
 #include <QVBoxLayout>
 #include <QScrollArea>
-#include <QtCharts/QChartView>
-#include <QtCharts/QSplineSeries>
-#include <QtCharts/QValueAxis>
-#include <QtCharts/QAreaSeries>
-#include "common/types/NetworkTypes.h"
 
-class StatisticsPage : public QWidget {
+class StatisticsPage : public ThemeablePage {
     Q_OBJECT
 public:
     explicit StatisticsPage(QWidget *parent = nullptr);
+    void onThemeChanged() override;
     void addPacket(const ParsedPacket& packet);
     void updateThreatStats(const QString& type);
     void updateThroughput(uint64_t throughputBps);
     void setTheme(bool dark);
-    void onThemeChanged();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

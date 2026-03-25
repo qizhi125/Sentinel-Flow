@@ -14,17 +14,17 @@
 #include <QThread>
 #include <vector>
 
+#include "ThemeablePage.h"
+
 class ForensicProxyModel;
 class PcapLoaderThread;
 
-class ForensicPage : public QWidget {
+class ForensicPage : public ThemeablePage {
     Q_OBJECT
 public:
     explicit ForensicPage(QWidget *parent = nullptr);
+    void onThemeChanged() override;
     ~ForensicPage() override;
-
-public slots:
-    void onThemeChanged();
 
 private slots:
     void onLoadPcapClicked();

@@ -1,4 +1,4 @@
-# Sentinel-Flow v1.0
+# Sentinel-Flow
 
 ## 项目简介
 

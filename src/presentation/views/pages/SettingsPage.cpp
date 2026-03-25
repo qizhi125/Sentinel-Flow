@@ -10,7 +10,7 @@
 #include <QPalette>
 #include <QApplication>
 
-SettingsPage::SettingsPage(QWidget *parent) : QWidget(parent) {
+SettingsPage::SettingsPage(QWidget *parent) : ThemeablePage(parent) {
     setupUi();
     loadPersistedSettings();
 }

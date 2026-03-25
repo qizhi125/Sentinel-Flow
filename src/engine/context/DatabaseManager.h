@@ -49,4 +49,6 @@ private:
     std::condition_variable queueCv;
     std::thread workerThread;
     std::atomic<bool> running{false};
+
+    mutable std::mutex dbMutex;
 };

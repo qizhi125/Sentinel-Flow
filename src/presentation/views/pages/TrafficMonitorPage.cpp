@@ -68,7 +68,7 @@ protected:
     }
 };
 
-TrafficMonitorPage::TrafficMonitorPage(QWidget *parent) : QWidget(parent) {
+TrafficMonitorPage::TrafficMonitorPage(QWidget *parent) : ThemeablePage(parent) {
     setupUi();
 
     uiTimer = new QTimer(this);

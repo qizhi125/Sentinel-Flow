@@ -13,18 +13,18 @@
 #include <QTimer>
 #include <deque>
 
+#include "ThemeablePage.h"
+
 class TrafficProxyModel;
 
-class TrafficMonitorPage : public QWidget {
+class TrafficMonitorPage : public ThemeablePage {
     Q_OBJECT
 public:
     explicit TrafficMonitorPage(QWidget *parent = nullptr);
+    void onThemeChanged() override;
     ~TrafficMonitorPage() override = default;
 
     void addPacket(const ParsedPacket& packet);
-
-public slots:
-    void onThemeChanged();
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;

@@ -1,7 +1,7 @@
 #include "presentation/cli/CliEngineManager.h"
 #include "engine/context/DatabaseManager.h"
 #include "engine/flow/SecurityEngine.h"
-#include "capture/impl/PcapCapture.h"
+#include "capture/driver/EBPFCapture.h"
 #include <QTimer>
 #include <QDateTime>
 #include <QCoreApplication>
@@ -44,7 +44,7 @@ CliEngineManager::~CliEngineManager() {
     std::cout << "\033[?25h" << std::flush;
 #endif
 
-    PcapCapture::instance().stop();
+    sentinel::capture::EBPFCapture::instance().stop();
 
     for (auto& pipe : pipelinePool) {
         pipe->stopPipeline();
@@ -53,11 +53,7 @@ CliEngineManager::~CliEngineManager() {
         pipe->wait();
     }
 
-    for (auto* adapter : adapterPool) {
-        delete adapter;
-    }
     adapterPool.clear();
-
     pipelinePool.clear();
     workerQueues.clear();
 
@@ -77,7 +73,7 @@ void CliEngineManager::start() {
         rawQueues.push_back(workerQueues.back().get());
     }
 
-    PcapCapture::instance().init(rawQueues);
+    sentinel::capture::EBPFCapture::instance().init(rawQueues);
 
     int idealThreads = std::thread::hardware_concurrency();
 
@@ -101,7 +97,7 @@ void CliEngineManager::start() {
         pipelinePool.push_back(std::move(pipe));
     }
 
-    auto devs = PcapCapture::instance().getDeviceList();
+    auto devs = sentinel::capture::EBPFCapture::instance().getDeviceList();
     if (!devs.empty()) {
         currentDevice = devs[0];
         QStringList args = QCoreApplication::arguments();
@@ -109,7 +105,7 @@ void CliEngineManager::start() {
         if (idx != -1 && idx + 1 < args.size()) {
             currentDevice = args[idx + 1].toStdString();
         }
-        PcapCapture::instance().start(currentDevice);
+        sentinel::capture::EBPFCapture::instance().start(currentDevice);
         pcapRunning = true;
     }
 
@@ -196,46 +192,56 @@ void CliEngineManager::renderTui() {
     int rv = select(STDIN_FILENO + 1, &set, nullptr, nullptr, &tv);
 
     if (rv > 0 && FD_ISSET(STDIN_FILENO, &set)) {
-        std::string line;
-        if (std::getline(std::cin, line)) {
-            std::istringstream iss(line);
-            std::string cmd; iss >> cmd;
-            if (cmd == "q") {
-                for (auto& pipe : pipelinePool) pipe->stopPipeline();
-                PcapCapture::instance().stop();
-                QCoreApplication::quit();
-                return;
-            } else if (cmd == "r") {
-                SecurityEngine::instance().compileRules();
-                loadedRuleCount = SecurityEngine::instance().getRules().size();
-                std::lock_guard<std::mutex> lg(latestAlertsMutex);
-                latestAlerts.push_front("[SYSTEM] Rules reloaded.");
-                if (latestAlerts.size() > 50) latestAlerts.pop_back();
-            } else if (cmd == "c") {
-                std::lock_guard<std::mutex> lg(latestAlertsMutex);
-                latestAlerts.clear();
-                alertsCritical = alertsHigh = alertsMedium = alertsLow = alertsInfo = 0;
-            } else if (cmd == "d") {
-                showDetail = !showDetail;
-            } else if (cmd == "i") {
-                std::string path; if (iss >> path) {
-                    std::ifstream ifs(path);
-                    if (!ifs.is_open()) {
-                        latestAlerts.push_front(std::string("[SYSTEM] Failed to open: ") + path);
-                        if (latestAlerts.size() > 50) latestAlerts.pop_back();
-                    } else {
-                        int maxId = 0; auto existing = SecurityEngine::instance().getRules(); for (const auto &r : existing) if (r.id > maxId) maxId = r.id;
-                        int added=0; std::string lineRule;
-                        while (std::getline(ifs, lineRule)) {
-                            auto start = lineRule.find_first_not_of(" \t\r\n"); if (start==std::string::npos) continue; if (lineRule[start]=='#') continue; auto end = lineRule.find_last_not_of(" \t\r\n"); std::string pattern = lineRule.substr(start, end - start + 1); if (pattern.empty()) continue;
-                            IdsRule rule{}; rule.id = ++maxId; rule.enabled=true; rule.protocol = "ANY"; rule.pattern = pattern; rule.level = Alert::Medium; rule.description = "imported"; SecurityEngine::instance().addRule(rule); ++added;
+    char ch;
+    ssize_t n = read(STDIN_FILENO, &ch, 1);
+    if (n > 0) {
+        if (ch == '\n' || ch == '\r') {
+            if (!inputBuffer.empty()) {
+                std::istringstream iss(inputBuffer);
+                std::string cmd; iss >> cmd;
+                if (cmd == "q") {
+                    for (auto& pipe : pipelinePool) pipe->stopPipeline();
+                    sentinel::capture::EBPFCapture::instance().stop();
+                    QCoreApplication::quit();
+                    return;
+                } else if (cmd == "r") {
+                    SecurityEngine::instance().compileRules();
+                    loadedRuleCount = SecurityEngine::instance().getRules().size();
+                    std::lock_guard<std::mutex> lg(latestAlertsMutex);
+                    latestAlerts.push_front("[SYSTEM] Rules reloaded.");
+                    if (latestAlerts.size() > 50) latestAlerts.pop_back();
+                } else if (cmd == "c") {
+                    std::lock_guard<std::mutex> lg(latestAlertsMutex);
+                    latestAlerts.clear();
+                    alertsCritical = alertsHigh = alertsMedium = alertsLow = alertsInfo = 0;
+                } else if (cmd == "d") {
+                    showDetail = !showDetail;
+                } else if (cmd == "i") {
+                    std::string path; if (iss >> path) {
+                        std::ifstream ifs(path);
+                        if (!ifs.is_open()) {
+                            latestAlerts.push_front(std::string("[SYSTEM] Failed to open: ") + path);
+                            if (latestAlerts.size() > 50) latestAlerts.pop_back();
+                        } else {
+                            int maxId = 0; auto existing = SecurityEngine::instance().getRules(); for (const auto &r : existing) if (r.id > maxId) maxId = r.id;
+                            int added=0; std::string lineRule;
+                            while (std::getline(ifs, lineRule)) {
+                                auto start = lineRule.find_first_not_of(" \t\r\n"); if (start==std::string::npos) continue; if (lineRule[start]=='#') continue; auto end = lineRule.find_last_not_of(" \t\r\n"); std::string pattern = lineRule.substr(start, end - start + 1); if (pattern.empty()) continue;
+                                IdsRule rule{}; rule.id = ++maxId; rule.enabled=true; rule.protocol = "ANY"; rule.pattern = pattern; rule.level = Alert::Medium; rule.description = "imported"; SecurityEngine::instance().addRule(rule); ++added;
+                            }
+                            SecurityEngine::instance().compileRules(); loadedRuleCount = SecurityEngine::instance().getRules().size(); latestAlerts.push_front(std::string("[SYSTEM] Imported ") + std::to_string(added) + " rules from: " + path); if (latestAlerts.size()>50) latestAlerts.pop_back();
                         }
-                        SecurityEngine::instance().compileRules(); loadedRuleCount = SecurityEngine::instance().getRules().size(); latestAlerts.push_front(std::string("[SYSTEM] Imported ") + std::to_string(added) + " rules from: " + path); if (latestAlerts.size()>50) latestAlerts.pop_back();
+                    } else {
+                        latestAlerts.push_front("[SYSTEM] Import requires a file path (e.g. i /path/to/rules)"); if (latestAlerts.size()>50) latestAlerts.pop_back();
                     }
-                } else {
-                    latestAlerts.push_front("[SYSTEM] Import requires a file path (e.g. i /path/to/rules)"); if (latestAlerts.size()>50) latestAlerts.pop_back();
                 }
+                inputBuffer.clear();
             }
+        } else if (ch == 127 || ch == 8) {
+            if (!inputBuffer.empty()) inputBuffer.pop_back();
+        } else if (ch >= 32 && ch <= 126) {
+            inputBuffer.push_back(ch);
         }
     }
+}
 }

@@ -53,6 +53,8 @@ private:
     bool dbOk = false;
     bool showDetail = false;
 
+    std::string inputBuffer;
+
 #ifdef HAVE_CURSES
     WINDOW* mainWin = nullptr;
     WINDOW* headerWin = nullptr;

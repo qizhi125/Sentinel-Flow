@@ -20,6 +20,8 @@ file(GLOB_RECURSE SRC_COMMON
 
 file(GLOB_RECURSE SRC_CAPTURE
         "src/capture/impl/*.cpp"
+        "src/capture/driver/*.c"
+        "src/capture/driver/*.cpp"
 )
 
 file(GLOB_RECURSE SRC_ENGINE
@@ -37,7 +39,8 @@ file(GLOB_RECURSE SRC_PRESENTATION
         "src/presentation/app/*.cpp"
 )
 
-set(SRC_MAIN "src/main.cpp")
+set(SRC_MAIN "src/main.cpp"
+        )
 
 add_executable(SentinelApp
         ${SRC_MAIN}
@@ -51,7 +54,6 @@ target_include_directories(SentinelApp PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# If curses was found, add its include dir and library and define HAVE_CURSES
 if(CURSES_FOUND)
     target_include_directories(SentinelApp PRIVATE ${CURSES_INCLUDE_DIR})
     target_link_libraries(SentinelApp PRIVATE ${CURSES_LIBRARIES})
@@ -67,6 +69,10 @@ target_link_libraries(SentinelApp PRIVATE
         pcap
         SQLite::SQLite3
         atomic
+        bpf
+        xdp
+        elf
+        z
 )
 
 set_property(TARGET SentinelApp PROPERTY AUTOMOC ON)
@@ -85,3 +91,23 @@ else()
             $<$<CONFIG:Release>:-O3 -flto>
     )
 endif()
+
+find_program(CLANG_EXE clang REQUIRED)
+
+set(XDP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/capture/driver/xdp_prog.c)
+set(XDP_OBJ ${CMAKE_CURRENT_BINARY_DIR}/xdp_prog.o)
+
+add_custom_command(
+        OUTPUT ${XDP_OBJ}
+        COMMAND ${CLANG_EXE} -g -O2 -target bpf -c ${XDP_SRC} -o ${XDP_OBJ}
+        DEPENDS ${XDP_SRC}
+        COMMENT "Compiling eBPF program: xdp_prog.c -> xdp_prog.o"
+)
+
+add_custom_target(ebpf_objects ALL DEPENDS ${XDP_OBJ})
+
+add_custom_command(TARGET ebpf_objects POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy ${XDP_OBJ} $<TARGET_FILE_DIR:SentinelApp>
+)
+
+add_dependencies(SentinelApp ebpf_objects)

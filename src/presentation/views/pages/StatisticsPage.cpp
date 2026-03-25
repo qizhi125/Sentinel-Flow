@@ -14,7 +14,7 @@
 #include <QNetworkInterface>
 #include <QDebug>
 
-StatisticsPage::StatisticsPage(QWidget *parent) : QWidget(parent) {
+StatisticsPage::StatisticsPage(QWidget *parent) : ThemeablePage(parent) {
     refreshLocalIps();
     setupUi();
     lastUpdateTimer.start();

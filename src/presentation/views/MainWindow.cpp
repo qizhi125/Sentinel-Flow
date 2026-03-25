@@ -1,7 +1,7 @@
 #include "presentation/adapters/PipelineAdapter.h"
 #include "presentation/views/styles/ThemeManager.h"
 #include "presentation/views/pages/ForensicPage.h"
-#include "capture/impl/PcapCapture.h"
+#include "capture/driver/EBPFCapture.h"
 #include "engine/flow/SecurityEngine.h"
 #include "engine/context/DatabaseManager.h"
 #include "MainWindow.h"
@@ -39,11 +39,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     rulesPage     = new RulesPage(this);
     settingsPage  = new SettingsPage(this);
 
+    themeablePages << dashboardPage << monitorPage << alertsPage << statsPage << forensicPage << rulesPage << settingsPage;
+
     setupUi();
 
     dashboardPage -> addSystemLog(QString("v1.0 引擎就绪 (Workers: %1)").arg(workerCount), "SUCCESS");
 
-    auto devs = PcapCapture::instance().getDeviceList();
+    auto devs = sentinel::capture::EBPFCapture::instance().getDeviceList();
     if (!devs.empty()) {
         std::string defaultDev = devs[0];
         QStringList args = QCoreApplication::arguments();
@@ -53,7 +55,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
 
         std::cout << "[CORE] Auto-starting capture on device: " << defaultDev << std::endl;
-        PcapCapture::instance().start(defaultDev);
+        sentinel::capture::EBPFCapture::instance().start(defaultDev);
         dashboardPage -> addSystemLog(QString("引擎启动: %1").arg(QString::fromStdString(defaultDev)), "INFO");
     } else {
         dashboardPage -> addSystemLog("未检测到网络接口，引擎待机", "WARN");
@@ -61,8 +63,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     }
 
     connect(settingsPage, &SettingsPage::captureInterfaceChanged, [this](const QString& iface){
-        PcapCapture::instance().stop();
-        PcapCapture::instance().start(iface.toStdString());
+        sentinel::capture::EBPFCapture::instance().stop();
+        sentinel::capture::EBPFCapture::instance().start(iface.toStdString());
         dashboardPage -> addSystemLog("捕获接口已切换: " + iface, "INFO");
     });
 
@@ -81,7 +83,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
-    PcapCapture::instance().stop();
+    sentinel::capture::EBPFCapture::instance().stop();
 
     for (auto& pipe : pipelinePool) {
         pipe -> stopPipeline();
@@ -90,11 +92,7 @@ MainWindow::~MainWindow() {
         pipe -> wait();
     }
 
-    for (auto* adapter : adapterPool) {
-        delete adapter;
-    }
     workerQueues.clear();
-
     pipelinePool.clear();
     workerQueues.clear();
 
@@ -118,7 +116,7 @@ void MainWindow::initSystemCore(int workerCount) {
         rawQueues.push_back(workerQueues.back().get());
     }
 
-    PcapCapture::instance().init(rawQueues);
+    sentinel::capture::EBPFCapture::instance().init(rawQueues);
 
     int idealThreads = std::thread::hardware_concurrency();
 
@@ -176,32 +174,12 @@ void MainWindow::onStatsUpdated(uint64_t bytes) {
 }
 
 void MainWindow::onThemeChanged(bool isDark) {
-    QList<QWidget*> pages = {dashboardPage, monitorPage, alertsPage, statsPage, rulesPage, settingsPage};
-    for (auto* page : pages) {
-        if (!page) continue;
-    }
-
     if (auto* app = qobject_cast<QApplication*>(QApplication::instance())) {
         ThemeManager::applyTheme(*app, isDark);
     }
 
-    if (dashboardPage && dashboardPage -> isWidgetType()) {
-        dashboardPage -> onThemeChanged();
-    }
-    if (statsPage && statsPage -> isWidgetType()) {
-        statsPage -> onThemeChanged();
-    }
-    if (monitorPage && monitorPage -> isWidgetType()) {
-        monitorPage -> onThemeChanged();
-    }
-    if (alertsPage && alertsPage -> isWidgetType()) {
-        alertsPage -> onThemeChanged();
-    }
-    if (forensicPage && forensicPage -> isWidgetType()) {
-        forensicPage -> onThemeChanged();
-    }
-    if (rulesPage && rulesPage -> isWidgetType()) {
-        rulesPage -> onThemeChanged();
+    for (ThemeablePage* page : themeablePages) {
+        if (page) page->onThemeChanged();
     }
 
     this->update();

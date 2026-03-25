@@ -146,7 +146,7 @@ void ThreatTimelineWidget::setTheme(bool isDark) {
     m_seriesMedium->setBrush(accent);
 }
 
-DashboardPage::DashboardPage(QWidget *parent) : QWidget(parent) {
+DashboardPage::DashboardPage(QWidget *parent) : ThemeablePage(parent) {
     setupUi();
     AuditLogger::instance().addCallback([this](const std::string& msg, const std::string& type){
         QMetaObject::invokeMethod(this, "addSystemLog", Qt::QueuedConnection, Q_ARG(QString, QString::fromStdString(msg)), Q_ARG(QString, QString::fromStdString(type)));
@@ -186,7 +186,7 @@ void DashboardPage::setupUi() {
     auto *timelineL = new QVBoxLayout(timelineBox);
     auto *tl = new QLabel("实时威胁时间轴");
     tl->setStyleSheet(QString("font-size: 16px; font-weight: bold; color: %1; background: transparent;").arg(Style::ColorAccent()));
-    threatTimeline = new ThreatTimelineWidget();
+    threatTimeline = new ThreatTimelineWidget(this);
     timelineL->addWidget(tl); timelineL->addWidget(threatTimeline, 1);
 
     midLayout->addWidget(timelineBox, 5);

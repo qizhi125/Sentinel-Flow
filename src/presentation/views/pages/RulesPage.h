@@ -1,4 +1,5 @@
 #pragma once
+#include "ThemeablePage.h"
 #include <QWidget>
 #include <QStackedWidget>
 #include <QTextEdit>
@@ -9,13 +10,11 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 
-class RulesPage : public QWidget {
+class RulesPage : public ThemeablePage {
     Q_OBJECT
 public:
     explicit RulesPage(QWidget *parent = nullptr);
-
-public slots:
-    void onThemeChanged();
+    void onThemeChanged() override;
 
 private slots:
     void onTabClicked(int id);

@@ -13,6 +13,7 @@ DatabaseManager& DatabaseManager::instance() {
 }
 
 void DatabaseManager::shutdown() {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (running) {
         running = false;
         queueCv.notify_all();
@@ -27,6 +28,7 @@ void DatabaseManager::shutdown() {
 }
 
 bool DatabaseManager::init(const std::string& dbPathStr) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (running) return true;
 
     namespace fs = std::filesystem;
@@ -35,16 +37,16 @@ bool DatabaseManager::init(const std::string& dbPathStr) {
     fs::path safeDir = fs::temp_directory_path(ec) / "sentinel-flow";
     if (!fs::exists(safeDir)) {
         fs::create_directories(safeDir, ec);
-        #ifdef __linux__
-                fs::permissions(safeDir, fs::perms::all, fs::perm_options::add, ec);
-        #endif
+#ifdef __linux__
+        fs::permissions(safeDir, fs::perms::all, fs::perm_options::add, ec);
+#endif
     }
 
     fs::path dbPath = safeDir / dbPathStr;
 
     int rc = sqlite3_open_v2(dbPath.string().c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
     if (rc != SQLITE_OK) {
-        std::cerr << "❌ [Database] 数据库挂载失败: " << sqlite3_errmsg(db) << std::endl;
+        std::cerr << "[Database] 数据库挂载失败: " << sqlite3_errmsg(db) << std::endl;
         return false;
     }
 
@@ -57,12 +59,12 @@ bool DatabaseManager::init(const std::string& dbPathStr) {
     sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
 
     const char* sqlAlerts = "CREATE TABLE IF NOT EXISTS alerts ("
-                              "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                              "timestamp INTEGER,"
-                              "rule_name TEXT,"
-                              "source_ip TEXT,"
-                              "level INTEGER,"
-                              "description TEXT);";
+                            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                            "timestamp INTEGER,"
+                            "rule_name TEXT,"
+                            "source_ip TEXT,"
+                            "level INTEGER,"
+                            "description TEXT);";
     sqlite3_exec(db, sqlAlerts, nullptr, nullptr, nullptr);
 
     const char* sqlRules = "CREATE TABLE IF NOT EXISTS rules ("
@@ -75,9 +77,9 @@ bool DatabaseManager::init(const std::string& dbPathStr) {
     sqlite3_exec(db, sqlRules, nullptr, nullptr, nullptr);
 
     const char* sqlBlacklist = "CREATE TABLE IF NOT EXISTS blacklist ("
-                               "ip TEXT PRIMARY KEY,"
-                               "reason TEXT,"
-                               "timestamp INTEGER);";
+                                "ip TEXT PRIMARY KEY,"
+                                "reason TEXT,"
+                                "timestamp INTEGER);";
     sqlite3_exec(db, sqlBlacklist, nullptr, nullptr, nullptr);
 
     const char* sqlConfig = "CREATE TABLE IF NOT EXISTS config ("
@@ -91,7 +93,9 @@ bool DatabaseManager::init(const std::string& dbPathStr) {
 }
 
 void DatabaseManager::saveRule(const IdsRule& rule) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return;
+
     const char* sql = "INSERT OR REPLACE INTO rules (id, enabled, protocol, pattern, level, description) VALUES (?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -107,7 +111,9 @@ void DatabaseManager::saveRule(const IdsRule& rule) {
 }
 
 void DatabaseManager::saveRulesTransaction(const std::vector<IdsRule>& rulesList) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db || rulesList.empty()) return;
+
     sqlite3_exec(db, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr);
     const char* sql = "INSERT OR REPLACE INTO rules (id, enabled, protocol, pattern, level, description) VALUES (?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt;
@@ -120,7 +126,7 @@ void DatabaseManager::saveRulesTransaction(const std::vector<IdsRule>& rulesList
             sqlite3_bind_int(stmt, 5, r.level);
             sqlite3_bind_text(stmt, 6, r.description.c_str(), -1, SQLITE_STATIC);
             sqlite3_step(stmt);
-            sqlite3_reset(stmt); // 复位以便下一轮绑定
+            sqlite3_reset(stmt);
         }
         sqlite3_finalize(stmt);
     }
@@ -128,7 +134,9 @@ void DatabaseManager::saveRulesTransaction(const std::vector<IdsRule>& rulesList
 }
 
 void DatabaseManager::deleteRule(int id) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return;
+
     const char* sql = "DELETE FROM rules WHERE id = ?;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -139,13 +147,16 @@ void DatabaseManager::deleteRule(int id) {
 }
 
 void DatabaseManager::clearRules() {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return;
     sqlite3_exec(db, "DELETE FROM rules;", nullptr, nullptr, nullptr);
 }
 
 std::vector<IdsRule> DatabaseManager::loadRules() {
     std::vector<IdsRule> rules;
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return rules;
+
     const char* sql = "SELECT id, enabled, protocol, pattern, level, description FROM rules ORDER BY id ASC;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -168,7 +179,9 @@ std::vector<IdsRule> DatabaseManager::loadRules() {
 }
 
 void DatabaseManager::saveBlacklist(const std::string& ip, const std::string& reason) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return;
+
     const char* sql = "INSERT OR REPLACE INTO blacklist (ip, reason, timestamp) VALUES (?, ?, ?);";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -181,7 +194,9 @@ void DatabaseManager::saveBlacklist(const std::string& ip, const std::string& re
 }
 
 void DatabaseManager::deleteBlacklist(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return;
+
     const char* sql = "DELETE FROM blacklist WHERE ip = ?;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -193,7 +208,9 @@ void DatabaseManager::deleteBlacklist(const std::string& ip) {
 
 std::vector<std::pair<std::string, std::string>> DatabaseManager::loadBlacklist() {
     std::vector<std::pair<std::string, std::string>> bl;
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return bl;
+
     const char* sql = "SELECT ip, reason FROM blacklist ORDER BY timestamp DESC;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -211,7 +228,9 @@ std::vector<std::pair<std::string, std::string>> DatabaseManager::loadBlacklist(
 }
 
 void DatabaseManager::saveConfig(const std::string& key, const std::string& value) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return;
+
     const char* sql = "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?);";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, 0) == SQLITE_OK) {
@@ -223,7 +242,9 @@ void DatabaseManager::saveConfig(const std::string& key, const std::string& valu
 }
 
 std::string DatabaseManager::loadConfig(const std::string& key, const std::string& defaultVal) {
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return defaultVal;
+
     std::string result = defaultVal;
     const char* sql = "SELECT value FROM config WHERE key = ?;";
     sqlite3_stmt* stmt;
@@ -267,6 +288,9 @@ void DatabaseManager::workerLoop() {
         }
 
         if (batch.empty()) continue;
+
+        // 工作线程操作数据库，加锁
+        std::lock_guard<std::mutex> lock(dbMutex);
         if (!db) continue;
 
         char* errMsg = nullptr;
@@ -299,8 +323,9 @@ void DatabaseManager::workerLoop() {
                 sqlite3_reset(stmt);
             }
             sqlite3_finalize(stmt);
-        } else
+        } else {
             success = false;
+        }
 
         if (success) {
             rc = sqlite3_exec(db, "COMMIT;", nullptr, nullptr, &errMsg);
@@ -319,6 +344,7 @@ void DatabaseManager::workerLoop() {
 
 std::vector<Alert> DatabaseManager::loadRecentAlerts(int limit) {
     std::vector<Alert> alerts;
+    std::lock_guard<std::mutex> lock(dbMutex);
     if (!db) return alerts;
 
     const char* sql = "SELECT timestamp, rule_name, source_ip, level, description FROM alerts ORDER BY timestamp DESC LIMIT ?;";

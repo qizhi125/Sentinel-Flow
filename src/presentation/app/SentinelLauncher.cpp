@@ -57,70 +57,44 @@ int SentinelLauncher::run(int argc, char *argv[]) {
     }
 
     #ifdef __linux__
-        bool hasPermission = false;
-        int testSock = ::socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-        if (testSock >= 0) {
-            hasPermission = true;
-            ::close(testSock);
-        }
+        // 🚀 核心修复：eBPF/AF_XDP 必须要求真实的 root 权限，仅仅 cap_net_raw 不再够用
+        bool hasPermission = (geteuid() == 0);
 
-        if (!hasPermission) {
+        if (!hasPermission && !skipMenu) {
             std::cout << "\n\033[1;33m[⚠️ 权限环境检测 (Privilege Check)]\033[0m\n";
-            std::cout << "当前进程缺乏底层网卡特权 (CAP_NET_RAW)。\n";
+            std::cout << "当前进程非 root 用户。AF_XDP/eBPF 零拷贝引擎需要锁定物理内存与内核级挂载权限。\n";
             std::cout << "若不提权，系统将默认进入【离线取证降级模式】，无法捕获实时流量。\n";
-            std::cout << "👉 是否立刻通过 sudo 为本程序自动写入网卡嗅探权限并重载？\n";
+            std::cout << "👉 是否立刻通过 sudo 以 root 身份重启本程序？\n";
             std::cout << "(输入 Y 同意提权，输入 N 拒绝并进入离线模式) [Y/n]: ";
 
             std::string authChoice;
             std::getline(std::cin, authChoice);
 
             if (authChoice.empty() || authChoice == "Y" || authChoice == "y") {
-                std::cout << "\033[1;36m[+] 正在请求授权，请在下方输入当前用户的 sudo 密码：\033[0m\n";
-
+                std::string absPath;
                 try {
-                    std::string absPath = std::filesystem::canonical(argv[0]).string();
-                    if (!std::filesystem::is_regular_file(absPath)) {
-                        std::cerr << "[!] 可执行文件路径异常: " << absPath << std::endl;
-                    } else {
-                        pid_t pid = fork();
-                        if (pid == 0) {
-                            execlp("sudo", "sudo", "setcap", "cap_net_raw,cap_net_admin=eip", absPath.c_str(), (char*)NULL);
-                            _exit(127);
-                        } else if (pid > 0) {
-                            int status = 0;
-                            waitpid(pid, &status, 0);
-                            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                                std::vector<std::string> args;
-                                args.push_back(absPath);
-                                bool hasMode = false;
-                                for (int i = 1; i < argc; ++i) {
-                                    std::string a = argv[i];
-                                    if (a == "--cli" || a == "--gui") {
-                                        hasMode = true;
-                                        args.push_back(a);
-                                    } else {
-                                        args.push_back(a);
-                                    }
-                                }
-                                if (!hasMode) {
-                                    args.insert(args.begin() + 1, isCliMode ? "--cli" : "--gui");
-                                }
-                                std::vector<char*> cargv;
-                                for (auto &s : args) cargv.push_back(const_cast<char*>(s.c_str()));
-                                cargv.push_back(nullptr);
-                                execv(absPath.c_str(), cargv.data());
-                                perror("execv");
-                                std::exit(1);
-                            } else {
-                                std::cout << "\033[1;31m[!] setcap 执行失败或被取消，继续以离线模式启动。\033[0m\n";
-                            }
-                        } else {
-                            perror("fork");
-                        }
-                    }
-                } catch (const std::filesystem::filesystem_error& e) {
-                    std::cerr << "[!] 无法解析可执行路径: " << e.what() << std::endl;
+                    absPath = std::filesystem::canonical(argv[0]).string();
+                } catch (...) {
+                    absPath = argv[0];
                 }
+
+                // 组装 sudo 的执行参数，无缝继承用户刚才选择的模式
+                std::vector<char*> cargv;
+                cargv.push_back(const_cast<char*>("sudo"));
+                cargv.push_back(const_cast<char*>(absPath.c_str()));
+                for (int i = 1; i < argc; ++i) {
+                    cargv.push_back(argv[i]);
+                }
+                // 确保自动追加模式标志，避免 sudo 重启后再次弹菜单
+                cargv.push_back(const_cast<char*>(isCliMode ? "--cli" : "--gui"));
+                cargv.push_back(nullptr);
+
+                std::cout << "\033[1;36m[+] 正在请求 sudo 授权，请在下方输入密码：\033[0m\n";
+                execvp("sudo", cargv.data());
+
+                // 如果 execvp 失败才会走到这里
+                perror("execvp sudo");
+                std::exit(1);
 
             } else {
                 std::cout << "\033[1;33m[!] 用户主动跳过授权。系统按原流程以离线模式继续启动...\033[0m\n";

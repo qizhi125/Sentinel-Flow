@@ -1,4 +1,5 @@
 #pragma once
+#include "ThemeablePage.h"
 #include <QWidget>
 #include <QLabel>
 #include <QTextEdit>
@@ -44,19 +45,18 @@ private:
     static constexpr int TIME_WINDOW_MS = 60000; // 1分钟
 };
 
-class DashboardPage : public QWidget {
+class DashboardPage : public ThemeablePage {
     Q_OBJECT
 public:
     explicit DashboardPage(QWidget *parent = nullptr);
+    void onThemeChanged() override;
+
     void updateSystemMetrics();
     void addSystemLog(const QString& message, const QString& type = "INFO");
     void updateSecurityStatus(int totalAlerts, int activeModules);
     void updateServiceStatus(bool aiOk, bool dbOk, bool netOk);
     void triggerRadarAlert(const QString& sourceIp, const QString& severity);
     void setTheme(bool isDark);
-
-public slots:
-    void onThemeChanged();
 
 private:
     void setupUi();

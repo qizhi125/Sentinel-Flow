@@ -1,4 +1,5 @@
 #pragma once
+#include "ThemeablePage.h"
 #include <QWidget>
 #include <QComboBox>
 #include <QCheckBox>
@@ -6,17 +7,15 @@
 #include <QLabel>
 #include <QSpinBox>
 
-class SettingsPage : public QWidget {
+class SettingsPage : public ThemeablePage {
     Q_OBJECT
 public:
     explicit SettingsPage(QWidget *parent = nullptr);
+    void onThemeChanged() override;
 
     signals:
         void captureInterfaceChanged(const QString& iface);
         void themeChanged(bool isDark);
-
-public slots:
-    void onThemeChanged();
 
 private slots:
     void onApplyEngineSettings();

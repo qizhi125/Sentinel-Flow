@@ -23,7 +23,7 @@
 #include <QTimer>
 #include <QDebug>
 
-AlertsPage::AlertsPage(QWidget *parent) : QWidget(parent) {
+AlertsPage::AlertsPage(QWidget *parent) : ThemeablePage(parent) {
     setupUi();
 
     uiRefreshTimer = new QTimer(this);

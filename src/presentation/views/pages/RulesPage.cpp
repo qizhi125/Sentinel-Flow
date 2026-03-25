@@ -15,7 +15,7 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 
-RulesPage::RulesPage(QWidget *parent) : QWidget(parent) {
+RulesPage::RulesPage(QWidget *parent) : ThemeablePage(parent) {
     setupUi();
     loadPersistedData();
 }

@@ -1,5 +1,5 @@
 #pragma once
-
+#include "common/types/NetworkTypes.h"
 #include <QWidget>
 #include <QTableWidget>
 #include <QLabel>
@@ -9,17 +9,18 @@
 #include <QComboBox>
 #include <QPushButton>
 #include <deque>
-#include "common/types/NetworkTypes.h"
 
-class AlertsPage : public QWidget {
+#include "ThemeablePage.h"
+
+class AlertsPage : public ThemeablePage {
     Q_OBJECT
 
 public:
     explicit AlertsPage(QWidget *parent = nullptr);
+    void onThemeChanged() override;
 
 public slots:
     void addAlert(const Alert& alert);
-    void onThemeChanged();
 
 private slots:
     void onExportClicked();

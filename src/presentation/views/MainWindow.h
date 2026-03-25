@@ -51,6 +51,8 @@ private:
     SettingsPage *settingsPage;
     ForensicPage *forensicPage;
 
+    QList<ThemeablePage*> themeablePages;
+
     QPushButton *btnDashboard;
     QPushButton *btnMonitor;
     QPushButton *btnAlerts;

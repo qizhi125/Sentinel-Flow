@@ -6,6 +6,7 @@
 #include <atomic>
 #include <thread>
 #include <shared_mutex>
+#include <pcap.h>
 
 class PcapCapture : public sentinel::capture::ICaptureDriver {
 public:
@@ -36,4 +37,5 @@ private:
     size_t queueCount = 0;
 
     mutable std::shared_mutex handleMutex;
+    pcap_t* handle = nullptr;
 };
