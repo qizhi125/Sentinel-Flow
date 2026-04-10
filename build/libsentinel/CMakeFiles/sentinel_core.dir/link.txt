@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsentinel_core.a CMakeFiles/sentinel_core.dir/src/capi_impl.cpp.o CMakeFiles/sentinel_core.dir/src/capture/driver/EBPFCapture.cpp.o CMakeFiles/sentinel_core.dir/src/capture/driver/xdp_prog.c.o CMakeFiles/sentinel_core.dir/src/capture/impl/PcapCapture.cpp.o CMakeFiles/sentinel_core.dir/src/engine/context/DatabaseManager.cpp.o CMakeFiles/sentinel_core.dir/src/engine/flow/PacketParser.cpp.o CMakeFiles/sentinel_core.dir/src/engine/flow/SecurityEngine.cpp.o CMakeFiles/sentinel_core.dir/src/engine/pipeline/PacketPipeline.cpp.o
-/usr/bin/ranlib libsentinel_core.a
