@@ -15,6 +15,7 @@ struct EngineContext {
     SentinelConfig config = {};
     std::string persistent_iface;
     std::string persistent_rules;
+    std::string persistent_offline_pcap;
     OnAlertCallback alert_cb = nullptr;
     OnStatsCallback stats_cb = nullptr;
     void* user_data = nullptr;
@@ -27,14 +28,14 @@ struct EngineContext {
 extern "C" {
 
 SentinelEngineHandle sentinel_engine_create(const SentinelConfig* config) {
-    if (!config || !config->interface_name) return nullptr;
+    if (!config) return nullptr;
     auto* ctx = new EngineContext();
     ctx->config = *config;
-    ctx->persistent_iface = config->interface_name;
+    if (config->interface_name) ctx->persistent_iface = config->interface_name;
     if (config->rules_path) ctx->persistent_rules = config->rules_path;
+    if (config->offline_pcap_path) ctx->persistent_offline_pcap = config->offline_pcap_path;
 
     SecurityEngine::instance().clearRules();
-
     return ctx;
 }
 
@@ -47,8 +48,11 @@ void sentinel_engine_set_callbacks(SentinelEngineHandle handle, OnAlertCallback 
     }
 }
 
+void sentinel_engine_clear_rules(SentinelEngineHandle handle) {
+    SecurityEngine::instance().clearRules();
+}
+
 void sentinel_engine_add_rule(SentinelEngineHandle handle, const SentinelRule* rule) {
-    (void)handle;
     if (!rule) return;
     IdsRule r;
     r.id = rule->id;
@@ -57,12 +61,10 @@ void sentinel_engine_add_rule(SentinelEngineHandle handle, const SentinelRule* r
     r.pattern = rule->pattern ? rule->pattern : "";
     r.level = static_cast<Alert::Level>(rule->level);
     r.description = rule->description ? rule->description : "";
-    
     SecurityEngine::instance().addRule(r);
 }
 
 int sentinel_engine_reload_rules(SentinelEngineHandle handle) {
-    (void)handle;
     SecurityEngine::instance().compileRules();
     return 0;
 }
@@ -72,7 +74,6 @@ int sentinel_engine_start(SentinelEngineHandle handle) {
     if (!ctx) return -1;
 
     uint32_t threads = ctx->config.num_worker_threads > 0 ? ctx->config.num_worker_threads : 1;
-    
     ctx->worker_queues.reserve(threads);
     ctx->pipelines.reserve(threads);
     std::vector<PacketQueue*> raw_queues;
@@ -84,44 +85,52 @@ int sentinel_engine_start(SentinelEngineHandle handle) {
         auto pipeline = std::make_unique<sentinel::engine::PacketPipeline>();
         pipeline->setInputQueue(raw_queues.back());
         pipeline->setInspector(&SecurityEngine::instance());
-
+        
         pipeline->setCallBack(nullptr, 
-        [ctx](const Alert& a, const ParsedPacket& p) {
-            if (ctx->alert_cb) {
-                AlertEvent ev{};
-                ev.timestamp_ns = a.timestamp * 1000000ULL;
-                ev.src_ip = a.sourceIp;
-                ev.dst_ip = p.dstIp;
-
-                try {
-                    if (a.ruleName.length() > 5) {
-                        ev.rule_id = std::stoi(a.ruleName.substr(5));
-                    }
-                } catch (...) { ev.rule_id = 0; }
-                
-                ev.payload_snippet = a.description.c_str();
-                ctx->alert_cb(&ev, ctx->user_data);
+            [ctx](const Alert& a, const ParsedPacket& p) {
+                if (ctx->alert_cb) {
+                    AlertEvent ev{};
+                    ev.timestamp_ns = a.timestamp * 1000000ULL;
+                    ev.src_ip = a.sourceIp;
+                    ev.dst_ip = p.dstIp;
+                    try {
+                        if (a.ruleName.length() > 5) {
+                            ev.rule_id = std::stoi(a.ruleName.substr(5));
+                        }
+                    } catch (...) { ev.rule_id = 0; }
+                    ev.payload_snippet = a.description.c_str();
+                    ctx->alert_cb(&ev, ctx->user_data);
+                }
+            }, 
+            [ctx](uint64_t bytesAccumulator) {
+                if (ctx->stats_cb) {
+                    EngineStats stats{};
+                    stats.current_qps = bytesAccumulator; 
+                    ctx->stats_cb(&stats, ctx->user_data);
+                }
             }
-        }, 
-        [ctx](uint64_t bytesAccumulator) {
-            if (ctx->stats_cb) {
-                EngineStats stats{};
-                stats.current_qps = bytesAccumulator; 
-                ctx->stats_cb(&stats, ctx->user_data);
-            }
-        });
+        );
 
         pipeline->startPipeline();
         ctx->pipelines.push_back(std::move(pipeline));
     }
 
-    if (ctx->config.enable_ebpf) {
-        ctx->capture_driver = &sentinel::capture::EBPFCapture::instance();
+    if (!ctx->persistent_offline_pcap.empty()) {
+        auto& pcapDriver = ::PcapCapture::instance();
+        pcapDriver.setOfflineMode(true);
+        pcapDriver.setVerbose(ctx->config.verbose != 0);
+        ctx->capture_driver = &pcapDriver;
+        ctx->capture_driver->init(raw_queues);
+        ctx->capture_driver->start(ctx->persistent_offline_pcap);
     } else {
-        ctx->capture_driver = &::PcapCapture::instance();
-    }
-
-    if (ctx->capture_driver) {
+        if (ctx->config.enable_ebpf) {
+            ctx->capture_driver = &sentinel::capture::EBPFCapture::instance();
+        } else {
+            auto& pcapDriver = ::PcapCapture::instance();
+            pcapDriver.setOfflineMode(false);
+            pcapDriver.setVerbose(ctx->config.verbose != 0);
+            ctx->capture_driver = &pcapDriver;
+        }
         ctx->capture_driver->init(raw_queues);
         ctx->capture_driver->start(ctx->persistent_iface);
     }
@@ -135,10 +144,7 @@ void sentinel_engine_stop(SentinelEngineHandle handle) {
 
 void sentinel_engine_destroy(SentinelEngineHandle handle) {
     auto* ctx = static_cast<EngineContext*>(handle);
-    if (ctx) {
-        sentinel_engine_stop(handle);
-        delete ctx;
-    }
+    if (ctx) { sentinel_engine_stop(handle); delete ctx; }
 }
 
 }

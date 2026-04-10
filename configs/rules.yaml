@@ -12,3 +12,11 @@ rules:
     pattern: "admin' OR 1=1"
     level: 4
     description: "SQL Injection Payload Detected in HTTP"
+
+  - id: 1003
+    enabled: true
+    protocol: "HTTP"
+    pattern: "/etc/passwd"
+    level: 4
+    description: "LFI Attack: Attempt to read /etc/passwd"
+

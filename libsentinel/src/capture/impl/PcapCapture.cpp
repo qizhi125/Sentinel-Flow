@@ -41,39 +41,60 @@ void PcapCapture::captureLoop() {
     char errbuf[PCAP_ERRBUF_SIZE];
     {
         std::unique_lock lock(handleMutex);
-        handle = pcap_open_live(currentDevice.c_str(), 2048, 1, 10, errbuf);
+        if (isOffline) {
+            handle = pcap_open_offline(currentDevice.c_str(), errbuf);
+        } else {
+            handle = pcap_open_live(currentDevice.c_str(), 2048, 1, 10, errbuf);
+        }
+        
         if (!handle) {
             std::cerr << "❌ [PcapCapture] Error: " << errbuf << std::endl;
             running = false; return;
         }
     }
-
+    
     int dlt = pcap_datalink(handle);
-    uint32_t linkOffset = 14;
+    uint32_t linkOffset = 14; 
     if (dlt == DLT_LINUX_SLL) linkOffset = 16;
     else if (dlt == DLT_NULL || dlt == DLT_LOOP) linkOffset = 4;
-    else if (dlt == 12 || dlt == 14) linkOffset = 0; // DLT_RAW
 
-    std::cout << "🚀 [PcapCapture] Listening on: " << currentDevice
-              << " (DLT: " << dlt << ", Offset: " << linkOffset << " bytes)" << std::endl;
+    if (isVerbose) {
+        if (isOffline) std::cout << "📂 正在分析离线 PCAP: " << currentDevice << std::endl;
+        else std::cout << "🚀 Listening on: " << currentDevice << std::endl;
+    }
 
     struct pcap_pkthdr* header;
     const u_char* pkt_data;
-
     while (running) {
         int res = pcap_next_ex(handle, &header, &pkt_data);
+        if (res == -2) {
+            if (isVerbose) std::cout << "\n✅ 离线 PCAP 读取完毕 (EOF)" << std::endl;
+            break;
+        }
         if (res <= 0) continue;
+
         uint32_t caplen = std::min<uint32_t>(header->caplen, 2048);
         int workerId = hashPacket(pkt_data, caplen, linkOffset);
+        
         MemoryBlock* rawBlock = PacketPool::instance().acquire();
         if (!rawBlock) continue;
+        
         std::memcpy(rawBlock->data, pkt_data, caplen);
         rawBlock->size = caplen;
         RawPacket raw;
         raw.kernelTimestampNs = (int64_t)header->ts.tv_sec * 1000000000L + header->ts.tv_usec * 1000L;
         raw.linkLayerOffset = linkOffset;
         raw.block = BlockPtr(rawBlock, BlockDeleter());
-        if (!workerQueues[workerId]->push(std::move(raw))) { /* Drop silently */ }
+
+        if (isOffline) {
+            // 离线模式：阻塞直至写入成功
+            while (!workerQueues[workerId]->push(std::move(raw)) && running) {
+                std::this_thread::yield(); 
+            }
+        } else {
+            // 实时模式：队满则丢弃
+            workerQueues[workerId]->push(std::move(raw));
+        }
     }
 }
 

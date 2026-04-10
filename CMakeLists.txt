@@ -1,16 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
-project(SentinelFlowCore VERSION 2.0.0 LANGUAGES C CXX)
+project(SentinelFlow CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_compile_options(-Wall -Wextra -fPIC)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-# 告诉 CMake 去哪里找我们自定义的 FindPCAP.cmake 模块
-set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
+# 开启 CTest 测试支持
+enable_testing()
 
-find_package(PCAP REQUIRED)
-
+# 编译数据面核心库
 add_subdirectory(libsentinel)
+
+# 编译单元测试
+add_subdirectory(tests)

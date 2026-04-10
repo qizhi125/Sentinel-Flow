@@ -14,11 +14,12 @@ typedef struct SentinelConfig {
     uint32_t ring_buffer_size;
     uint8_t enable_ebpf;
     const char* rules_path;
+    const char* offline_pcap_path;
+    uint8_t verbose;
 } SentinelConfig;
 
 typedef void* SentinelEngineHandle;
 
-// 定义用于跨语言传递的规则结构体
 typedef struct SentinelRule {
     int32_t id;
     uint8_t enabled;
@@ -42,7 +43,7 @@ typedef struct AlertEvent {
 typedef struct EngineStats {
     uint64_t total_packets_received;
     uint64_t total_packets_dropped;
-    uint64_t current_qps; // 临时承载 Bytes Accumulator 供 Go 侧计算吞吐
+    uint64_t current_qps;
     uint32_t active_flows;
 } EngineStats;
 
@@ -55,7 +56,7 @@ int sentinel_engine_start(SentinelEngineHandle handle);
 void sentinel_engine_stop(SentinelEngineHandle handle);
 void sentinel_engine_destroy(SentinelEngineHandle handle);
 
-// 新增：动态规则管理 API
+void sentinel_engine_clear_rules(SentinelEngineHandle handle);
 void sentinel_engine_add_rule(SentinelEngineHandle handle, const SentinelRule* rule);
 int sentinel_engine_reload_rules(SentinelEngineHandle handle);
 

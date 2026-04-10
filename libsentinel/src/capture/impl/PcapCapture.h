@@ -22,6 +22,9 @@ public:
     bool setFilter(const std::string& filterExp) override;
     std::vector<std::string> getDeviceList() override;
 
+    void setOfflineMode(bool offline) { isOffline = offline; }
+    void setVerbose(bool v) { isVerbose = v; }
+
 private:
     PcapCapture() = default;
     ~PcapCapture() override;
@@ -35,6 +38,8 @@ private:
 
     std::vector<sentinel::capture::PacketQueue*> workerQueues;
     size_t queueCount = 0;
+    bool isOffline = false;
+    bool isVerbose = false;
 
     mutable std::shared_mutex handleMutex;
     pcap_t* handle = nullptr;
