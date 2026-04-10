@@ -1,29 +1,49 @@
 # 项目演进路线图 (Roadmap)
 
-## Phase 1: 骨架与重构 (已完成)
-- [x] 实施 v1.0 功能分层目录结构 (`capture/`, `engine/`, `presentation/`)。
-- [x] 修复 CMake 构建系统与 Qt6 依赖链。
-- [x] 改造 `RawPacket` 强制携带 Linux 内核级纳秒时间戳 (`SO_TIMESTAMP`)。
-- [x] **[安全加固]** 修复对象池 (`ObjectPool`) 的析构与内存泄漏问题。
-- [x] **[安全加固]** 修复 UI 挂载生命周期：纠正 `setupUi` 提前调用导致的空指针静默炸弹。
-- [x] **[环境适配]** 攻克 Linux Sudo/Wayland 环境下的显卡上下文丢失问题，引入 `AA_UseSoftwareOpenGL` 软件渲染防黑屏保护。
+## 当前状态
 
-## Phase 2: 无锁并发与管线改造 (已完成)
-- [x] 废弃传统互斥锁，引入基于 `std::atomic` 的 **单生产者单消费者无锁环形队列 (`SPSCQueue`)**。
-- [x] 废弃 `std::vector<ThreadSafeQueue>` 方案，根据 CPU 物理核心数自动分配 `PacketPipeline` Worker 池。
-- [x] 实施线程的 CPU 亲和性绑定 (Core Affinity)，消除 CPU 缓存一致性 (Cache Bouncing) 开销。
-- [x] 重构跨线程通信，通过 `qRegisterMetaType` 和 `QSharedPointer` 智能指针实现解析结果的**批量、零拷贝传递**。
+Sentinel-Flow 已完成从 Qt GUI 到 **Go CLI + C++ 核心库** 的架构转型。数据面基于无锁队列、对象池和 AC 自动机实现高性能流量检测，控制面由 Go 提供动态规则下发与实时监控。
 
-## Phase 3: 工业级性能与 UI 极速渲染 (已完成)
-- [x] 安全引擎内核大换血，集成 **Aho-Corasick (AC) 自动机**，实现 O(N) 时间复杂度的多模式工业级扫描。
-- [x] 优化并发瓶颈，将全局黑名单控制锁升级为 `std::shared_mutex` (读写锁)。
-- [x] 引入独立的高危事件异步取证系统 (`ForensicWorker`)，防止 PCAP I/O 落盘阻塞高速解析管线。
-- [x] 彻底摒弃卡顿的 `QTableWidget`，重构前端数据引擎，引入基于 `QAbstractTableModel` 的 **虚拟列表 (`TrafficTableModel`)**，轻松支撑 10万+ 行数据无阻塞渲染。
-- [x] 增强 SQLite 数据库事务健壮性，使用 `BEGIN IMMEDIATE` 防止死锁并引入 WAL 模式。
+## 未来规划
 
-## Phase 4: 协议深解析与智能化扩展 (当前与未来焦点)
-- [ ] **[当前焦点]** 协议深度解析引擎 (DPI)：支持从 L4 深入至 HTTP/DNS/TLS 等应用层协议特征提取。
-- [ ] 支持安全规则与黑名单的动态热加载 (无需停止抓包即可替换 AC 自动机规则树)。
-- [ ] 实施 "智能分诊与背压"：在系统内存拥塞或队列超载时，主动丢弃低价值大包 (如视频流) 以保全核心控制流。
-- [ ] 实现 Linux eBPF 高性能捕获驱动，替代 Libpcap，实现真正的内核旁路 (Kernel Bypass) 零拷贝。
-- [ ] 提供 Lua 脚本接口用于编写自定义的协议解析插件与封堵规则。
+### Phase 1: 协议深度解析 (DPI)
+
+- [ ] 从 L4 扩展至 L7 应用层协议识别与字段提取（HTTP、DNS、TLS、SMTP 等）。
+- [ ] 支持基于协议字段的精细化规则匹配（如 HTTP URI、User-Agent、DNS 查询域名）。
+- [ ] 实现协议解析器的插件化架构，便于动态加载自定义解析器。
+
+### Phase 2: eBPF 捕获增强
+
+- [ ] 将 `xdp_prog.c` 的编译集成至 CMake 构建流程。
+- [ ] 实现 eBPF/XDP 程序的动态加载与卸载，无需重启进程即可切换捕获后端。
+- [ ] 支持通过 BPF map 动态更新内核态过滤规则（如 IP 黑名单），减少用户态拷贝。
+- [ ] 提供 eBPF 性能监控指标（丢包率、XDP 程序执行时间）。
+
+### Phase 3: 规则热加载与智能管理
+
+- [ ] 支持监听规则文件（YAML）变化，自动触发 AC 自动机重编译。
+- [ ] 增加规则优先级与预过滤机制，降低误报率。
+- [ ] 提供 Go 侧规则验证 API，防止无效规则导致引擎异常。
+
+### Phase 4: 集群化与远程监控
+
+- [ ] 设计 gRPC API，支持远程下发规则、拉取统计信息与告警事件。
+- [ ] 实现多节点集中管理控制平面（Sentinel Controller）。
+- [ ] 支持将告警与流量元数据导出至 Kafka / Elasticsearch。
+
+### Phase 5: 跨平台与可移植性
+
+- [ ] 抽象操作系统相关接口，初步支持 macOS（使用 `/dev/bpf`）和 Windows（使用 Npcap）。
+- [ ] 提供 Docker 镜像，简化部署与测试。
+
+---
+
+## 已完成里程碑（v2.0 架构）
+
+- ✅ C++ 核心引擎编译为静态库，Go 通过 CGO 调用。
+- ✅ 动态规则添加与 AC 自动机热重载。
+- ✅ 双捕获后端：libpcap 与 AF_XDP（基础实现）。
+- ✅ 多核流水线并行，CPU 亲和性绑定。
+- ✅ 异步取证与 SQLite WAL 批量写入。
+- ✅ YAML 规则配置文件解析。
+- ✅ 终端实时统计与告警输出。

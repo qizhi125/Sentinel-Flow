@@ -9,12 +9,12 @@
 ### 节点定义
 
 ```cpp
-    struct Node {
-        Node* next[256];          // 状态转移表 (每个字节一个槽位)
-        Node* fail = nullptr;     // 失败指针
-        std::vector<int> ruleIds; // 当前节点匹配的规则 ID 列表
-        Node() { std::memset(next, 0, sizeof(next)); }
-    };
+struct Node {
+    Node* next[256];          // 状态转移表 (每个字节一个槽位)
+    Node* fail = nullptr;     // 失败指针
+    std::vector<int> ruleIds; // 当前节点匹配的规则 ID 列表
+    Node() { std::memset(next, 0, sizeof(next)); }
+};
 ```
 
 - `next[256]`：支持 0-255 所有字节值的快速转移，无需哈希。
@@ -24,15 +24,15 @@
 ### AC 自动机类
 
 ```cpp
-    class AhoCorasick {
-    public:
-        void insert(const std::string& pattern, int ruleId);
-        void build();
-        const std::vector<int>* match(const std::vector<uint8_t>& data) const;
-    private:
-        std::unique_ptr<Node> root;
-        std::vector<std::unique_ptr<Node>> allNodes;
-    };
+class AhoCorasick {
+public:
+    void insert(const std::string& pattern, int ruleId);
+    void build();
+    const std::vector<int>* match(const std::vector<uint8_t>& data) const;
+private:
+    std::unique_ptr<Node> root;
+    std::vector<std::unique_ptr<Node>> allNodes;
+};
 ```
 
 - `root` 作为自动机的根节点。
@@ -43,19 +43,19 @@
 ### 插入规则
 
 ```cpp
-    void insert(const std::string& pattern, int ruleId) {
-        Node* curr = root.get();
-        for (uint8_t c : pattern) {
-            uint8_t idx = static_cast<uint8_t>(std::toupper(c)); // 大小写不敏感
-            if (!curr->next[idx]) {
-                auto newNode = std::make_unique<Node>();
-                curr->next[idx] = newNode.get();
-                allNodes.push_back(std::move(newNode));
-            }
-            curr = curr->next[idx];
+void insert(const std::string& pattern, int ruleId) {
+    Node* curr = root.get();
+    for (uint8_t c : pattern) {
+        uint8_t idx = static_cast<uint8_t>(std::toupper(c)); // 大小写不敏感
+        if (!curr->next[idx]) {
+            auto newNode = std::make_unique<Node>();
+            curr->next[idx] = newNode.get();
+            allNodes.push_back(std::move(newNode));
         }
-        curr->ruleIds.push_back(ruleId);
+        curr = curr->next[idx];
     }
+    curr->ruleIds.push_back(ruleId);
+}
 ```
 
 - 将规则转换为大写字节序列。
@@ -65,37 +65,37 @@
 ### 构建失败指针
 
 ```cpp
-    void build() {
-        std::queue<Node*> q;
-        // 初始化第一层节点的 fail 指针指向 root
-        for (int i = 0; i < 256; ++i) {
-            if (root->next[i]) {
-                root->next[i]->fail = root.get();
-                q.push(root->next[i]);
-            } else {
-                root->next[i] = root.get(); // 缺失的转移指向 root
-            }
+void build() {
+    std::queue<Node*> q;
+    // 初始化第一层节点的 fail 指针指向 root
+    for (int i = 0; i < 256; ++i) {
+        if (root->next[i]) {
+            root->next[i]->fail = root.get();
+            q.push(root->next[i]);
+        } else {
+            root->next[i] = root.get(); // 缺失的转移指向 root
         }
-    
-        // BFS 构建后续节点的 fail 指针
-        while (!q.empty()) {
-            Node* u = q.front(); q.pop();
-            for (int i = 0; i < 256; ++i) {
-                if (u->next[i]) {
-                    u->next[i]->fail = u->fail->next[i];
-                    // 合并失败节点的规则 ID
-                    auto& targetIds = u->next[i]->ruleIds;
-                    auto& failIds = u->next[i]->fail->ruleIds;
-                    if (!failIds.empty()) {
-                        targetIds.insert(targetIds.end(), failIds.begin(), failIds.end());
-                    }
-                    q.push(u->next[i]);
-                } else {
-                    u->next[i] = u->fail->next[i];
+    }
+
+    // BFS 构建后续节点的 fail 指针
+    while (!q.empty()) {
+        Node* u = q.front(); q.pop();
+        for (int i = 0; i < 256; ++i) {
+            if (u->next[i]) {
+                u->next[i]->fail = u->fail->next[i];
+                // 合并失败节点的规则 ID
+                auto& targetIds = u->next[i]->ruleIds;
+                auto& failIds = u->next[i]->fail->ruleIds;
+                if (!failIds.empty()) {
+                    targetIds.insert(targetIds.end(), failIds.begin(), failIds.end());
                 }
+                q.push(u->next[i]);
+            } else {
+                u->next[i] = u->fail->next[i];
             }
         }
     }
+}
 ```
 
 - 使用队列进行 BFS。
@@ -106,16 +106,16 @@
 ### 匹配过程
 
 ```cpp
-    const std::vector<int>* match(const std::vector<uint8_t>& data) const {
-        Node* curr = root.get();
-        for (uint8_t c : data) {
-            uint8_t idx = static_cast<uint8_t>(std::toupper(c));
-            curr = curr->next[idx];
-            if (!curr->ruleIds.empty())
-                return &curr->ruleIds;  // 返回第一个命中的规则列表
-        }
-        return nullptr;
+const std::vector<int>* match(const std::vector<uint8_t>& data) const {
+    Node* curr = root.get();
+    for (uint8_t c : data) {
+        uint8_t idx = static_cast<uint8_t>(std::toupper(c));
+        curr = curr->next[idx];
+        if (!curr->ruleIds.empty())
+            return &curr->ruleIds;  // 返回第一个命中的规则列表
     }
+    return nullptr;
+}
 ```
 
 - 遍历载荷每个字节，根据当前状态转移。
@@ -127,26 +127,26 @@
 在 `SecurityEngine` 中，规则修改后调用 `compileRules()` 重建自动机：
 
 ```cpp
-    void SecurityEngine::compileRules() {
-        // 1. 获取规则快照
-        std::vector<IdsRule> currentRules;
-        { std::shared_lock lock(rulesMutex); currentRules = rules; }
-    
-        // 2. 构建新自动机
-        auto newDetector = std::make_unique<AhoCorasick>();
-        for (const auto& rule : currentRules) {
-            if (rule.enabled && !rule.pattern.empty())
-                newDetector->insert(rule.pattern, rule.id);
-        }
-        newDetector->build();
-    
-        // 3. 原子切换指针
-        {
-            std::unique_lock lock(rulesMutex);
-            std::swap(acDetector, newDetector);
-        }
-        // 4. 旧自动机在 newDetector 析构时释放（锁外）
+void SecurityEngine::compileRules() {
+    // 1. 获取规则快照
+    std::vector<IdsRule> currentRules;
+    { std::shared_lock lock(rulesMutex); currentRules = rules; }
+
+    // 2. 构建新自动机
+    auto newDetector = std::make_unique<AhoCorasick>();
+    for (const auto& rule : currentRules) {
+        if (rule.enabled && !rule.pattern.empty())
+            newDetector->insert(rule.pattern, rule.id);
     }
+    newDetector->build();
+
+    // 3. 原子切换指针
+    {
+        std::unique_lock lock(rulesMutex);
+        std::swap(acDetector, newDetector);
+    }
+    // 4. 旧自动机在 newDetector 析构时释放（锁外）
+}
 ```
 
 - 使用读写锁保护 `acDetector` 指针。
@@ -178,4 +178,3 @@
 - 可增加规则预过滤（如协议、端口）减少 AC 自动机调用次数。
 - 可支持 Unicode 规则，需扩展字符集为 256 或使用多字节转换。
 
----

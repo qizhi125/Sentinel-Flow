@@ -88,25 +88,42 @@
 
 ```cpp
     void ForensicWorker::saveBatchToPcap(const std::vector<ParsedPacket>& batch) {
-        QString path = QString("evidences/batch_%1_count_%2.pcap")
-                        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"))
-                        .arg(batch.size());
-    
+        namespace fs = std::filesystem;
+        using namespace std::chrono;
+
+        // 生成时间戳字符串
+        auto now = system_clock::now();
+        auto time_t_now = system_clock::to_time_t(now);
+        auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+        std::tm tm_now;
+        localtime_r(&time_t_now, &tm_now);
+        
+        char timeBuf[64];
+        snprintf(timeBuf, sizeof(timeBuf), "%04d%02d%02d_%02d%02d%02d_%03d",
+                 tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+                 tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec, (int)ms.count());
+
+        std::string filename = "evidences/batch_" + std::string(timeBuf) + 
+                               "_count_" + std::to_string(batch.size()) + ".pcap";
+
+        // 确保目录存在
+        fs::create_directories("evidences");
+
         pcap_t* dead = pcap_open_dead(DLT_EN10MB, 65535);
-        pcap_dumper_t* dumper = pcap_dump_open(dead, path.toLocal8Bit().constData());
-    
+        pcap_dumper_t* dumper = pcap_dump_open(dead, filename.c_str());
+
         for (const auto& pkt : batch) {
             struct pcap_pkthdr h;
             h.ts.tv_sec = pkt.timestamp / 1000;
             h.ts.tv_usec = (pkt.timestamp % 1000) * 1000;
             h.caplen = pkt.totalLen;
             h.len = pkt.totalLen;
-    
+
             if (pkt.block) {
                 pcap_dump((u_char*)dumper, &h, pkt.block->data);
             }
         }
-    
+
         pcap_dump_close(dumper);
         pcap_close(dead);
     }
@@ -152,8 +169,7 @@
 ### 目录管理
 
 - 默认目录：`evidences/`（相对于程序运行路径）。
-- 系统自动创建目录（`QDir().mkpath("evidences")`）。
-- 用户可在 `SettingsPage` 中修改取证保存路径（当前版本为预留功能）。
+- 系统自动创建目录（`std::filesystem::create_directories`）。
 
 ## 局限性
 
@@ -169,4 +185,3 @@
 - **加密存储**：为敏感环境添加 AES 加密支持。
 - **元数据索引**：在 SQLite 中建立索引，便于按时间、规则快速定位取证文件。
 
----
