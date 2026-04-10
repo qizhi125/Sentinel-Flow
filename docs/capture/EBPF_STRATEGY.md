@@ -20,11 +20,13 @@
 XDP 是 Linux 内核提供的高性能、可编程的数据路径，在网卡驱动收到数据包后、内核协议栈处理前执行 eBPF 程序。
 
 **优势**：
+
 - 最早介入点，性能最优。
 - 支持 `XDP_DROP` 直接丢弃，`XDP_TX` 转发，`XDP_PASS` 传递给协议栈。
 - 可通过 AF_XDP 实现零拷贝用户态接收。
 
 **集成方式**：
+
 - 编写 eBPF C 程序，编译为 BPF 字节码。
 - 使用 `libbpf` 或 `bpftool` 加载到网卡。
 - 通过 BPF map 与用户态共享统计信息、黑名单等。
@@ -34,11 +36,13 @@ XDP 是 Linux 内核提供的高性能、可编程的数据路径，在网卡驱
 AF_XDP 允许用户态程序通过 socket 直接从 XDP 程序接收数据包，无需经过协议栈，实现真正的零拷贝。
 
 **优势**：
+
 - 绕过内核协议栈，大幅降低延迟。
 - 支持多队列，可绑定 CPU 核心。
 - 与 `libpcap` 的 AF_XDP 后端兼容。
 
 **集成方式**：
+
 - 创建 AF_XDP socket，绑定到指定网卡和队列。
 - 通过 `recvmsg` 或 `poll` 接收数据包。
 - 数据包直接写入用户态预分配的内存区域（`umem`），零拷贝。
@@ -56,17 +60,22 @@ AF_XDP 允许用户态程序通过 socket 直接从 XDP 程序接收数据包，
 `ICaptureDriver` 定义了捕获驱动的统一接口：
 
 ```cpp
-    class ICaptureDriver {
-    public:
-        virtual void init(const std::vector<PacketQueue*>& queues) = 0;
-        virtual void start(const std::string& device) = 0;
-        virtual void stop() = 0;
-        virtual bool setFilter(const std::string& filterExp) = 0;
-        virtual std::vector<std::string> getDeviceList() = 0;
-    };
+class ICaptureDriver {
+public:
+    virtual void init(const std::vector<PacketQueue*>& queues) = 0;
+    virtual void start(const std::string& device) = 0;
+    virtual void stop() = 0;
+    virtual bool setFilter(const std::string& filterExp) = 0;
+    virtual std::vector<std::string> getDeviceList() = 0;
+};
 ```
 
-`EBPFCapture` 将实现此接口，与 `PcapCapture` 并列，通过配置或命令行参数选择后端。
+`EBPFCapture` 已实现此接口，与 `PcapCapture` 并列。通过配置或命令行参数选择后端：
+
+```bash
+# 启用 eBPF 模式（需提前编译并加载 xdp_prog.o）
+./bin/sentinel-cli -i eth0 --ebpf
+```
 
 ### 数据流适配
 
@@ -77,54 +86,54 @@ AF_XDP 允许用户态程序通过 socket 直接从 XDP 程序接收数据包，
 ### 内存管理
 
 - 使用 `PacketPool` 管理用户态内存，与 `PcapCapture` 一致。
-- AF_XDP 的 `umem` 需预分配连续大页内存，与 `ObjectPool` 的分配方式不同，需做适配或单独管理。
+- AF_XDP 的 `umem` 需预分配连续大页内存，与 `ObjectPool` 的分配方式不同，目前通过独立的内存管理逻辑适配。
 
 ## 性能预期
 
-| 指标 | libpcap (现有) | eBPF/XDP (规划) |
-|------|----------------|-----------------|
-| 最大吞吐 | 约 2-4 Gbps (单核) | 10 Gbps+ (单核) |
-| 丢包率 | 高负载下可能丢包 | 极低，接近线速 |
-| CPU 占用 | 较高 (系统调用、数据拷贝) | 较低 (内核态处理、零拷贝) |
-| 过滤效率 | BPF 在内核执行，但仍有拷贝 | XDP 直接丢弃，零拷贝 |
+| 指标     | libpcap (现有)             | eBPF/XDP (规划)           |
+| -------- | -------------------------- | ------------------------- |
+| 最大吞吐 | 约 2-4 Gbps (单核)         | 10 Gbps+ (单核)           |
+| 丢包率   | 高负载下可能丢包           | 极低，接近线速            |
+| CPU 占用 | 较高 (系统调用、数据拷贝)  | 较低 (内核态处理、零拷贝) |
+| 过滤效率 | BPF 在内核执行，但仍有拷贝 | XDP 直接丢弃，零拷贝      |
 
 ## 实施计划
 
-### 阶段一：原型验证 (1-2 月)
+### 阶段一：基础集成（已完成）
 
-- 编写简单 XDP 程序，实现包计数和基本过滤。
-- 集成 AF_XDP 接收路径，验证零拷贝可行性。
-- 适配 `PacketPool` 与 AF_XDP `umem` 内存管理。
+- ✅ 实现 `EBPFCapture` 类，满足 `ICaptureDriver` 接口。
+- ✅ 支持加载外部 XDP 程序 `xdp_prog.o`，创建 AF_XDP socket。
+- ✅ 与现有解析管线对接，通过 SPSC 队列分发报文。
 
-### 阶段二：驱动集成 (2-3 月)
+### 阶段二：优化与完善（进行中）
 
-- 实现 `EBPFCapture` 类，满足 `ICaptureDriver` 接口。
-- 支持动态加载 BPF 程序，与现有解析管线对接。
-- 实现黑名单 BPF map 动态更新。
+- [ ] 将 `xdp_prog.c` 编译集成至 CMake 构建流程。
+- [ ] 支持多队列自动绑定 CPU 核心。
+- [ ] 实现 BPF map 动态更新黑名单的 API。
+- [ ] 添加 eBPF 运行状态监控指标（如 XDP 丢包计数）。
 
-### 阶段三：优化与生产就绪 (3-4 月)
+### 阶段三：生产就绪
 
-- 支持多队列，自动绑定 CPU 核心。
-- 实现热切换机制，无需重启即可在后端间切换。
-- 添加性能监控指标（如 `bpftool` 输出）。
+- [ ] 实现运行时后端热切换，无需重启进程即可在 pcap/eBPF 间切换。
+- [ ] 提供 XDP 程序版本管理与签名验证。
+- [ ] 完善性能调优文档与故障排查指南。
 
 ## 使用示例
 
 ```bash
-    # 启动时指定使用 eBPF 后端（占位）
-    ./SentinelApp --gui --driver=ebpf
-    
-    # 或通过配置文件切换
-    # config.ini
-    # capture_driver=ebpf
+# 确保已编译 eBPF 探针（xdp_prog.o 位于可执行文件同目录或 build/ 下）
+# 启动时指定使用 eBPF 后端
+./bin/sentinel-cli -i eth0 --ebpf -r ./configs/rules.yaml
 ```
+
+若 eBPF 初始化失败（如内核版本过低、网卡不支持），引擎将输出警告并自动降级为 libpcap 模式。
 
 ## 注意事项
 
 - eBPF 需要 Linux 内核版本 >= 4.15，推荐 5.4+。
 - XDP 需要网卡驱动支持（大多数主流网卡已支持）。
-- 需安装 `libbpf`、`bpftool` 等开发工具。
-- 若 eBPF 不可用，系统自动回退到 `libpcap` 模式。
+- 需安装 `libbpf`、`libxdp` 开发包。
+- 若未授予 `CAP_NET_ADMIN` 和 `CAP_BPF` 能力，eBPF 模式将无法启动。
 
 ## 参考资料
 
@@ -132,4 +141,3 @@ AF_XDP 允许用户态程序通过 socket 直接从 XDP 程序接收数据包，
 - [AF_XDP Kernel Documentation](https://www.kernel.org/doc/html/latest/networking/af_xdp.html)
 - [libbpf GitHub](https://github.com/libbpf/libbpf)
 
----

@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+bin/
+*.o
+*.a
+*.so
+sentinel-cli
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Runtime data
+evidences/
+*.db
+*.db-wal
+*.db-shm
+
+# OS
+.DS_Store
+Thumbs.db

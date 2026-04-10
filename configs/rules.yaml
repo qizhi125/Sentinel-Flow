@@ -1,0 +1,14 @@
+rules:
+  - id: 1001
+    enabled: true
+    protocol: "ANY"
+    pattern: "sentinel_test_attack"
+    level: 4
+    description: "Simulated Attack: sentinel_test_attack payload detected"
+
+  - id: 1002
+    enabled: true
+    protocol: "HTTP"
+    pattern: "admin' OR 1=1"
+    level: 4
+    description: "SQL Injection Payload Detected in HTTP"

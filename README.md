@@ -2,82 +2,123 @@
 
 ## 项目简介
 
-Sentinel-Flow 是一个基于 Linux 平台的万兆级网络流量分析与安全监测系统。项目采用 C++20 标准开发，利用 Qt6 构建图形用户界面，底层使用 Libpcap 进行数据包捕获。
+Sentinel-Flow 是一款基于 **C++ 核心引擎 + Go 控制面** 的轻量级网络入侵检测系统（NIDS），专注于高性能流量捕获与实时威胁检测。项目采用 C++20 实现底层数据面，利用无锁队列、对象池、eBPF/AF_XDP 零拷贝技术保障万兆线速处理能力；控制面则由 Go 语言 CLI 工具驱动，通过 CGO 调用 C API 实现动态规则下发与实时状态监控。
 
-该系统旨在提供实时的网络态势感知能力，主要功能包括深度协议解析、实时流量监控、基于 Aho-Corasick 自动机的入侵检测 (IDS) 以及高危报文的异步取证。
-
-## 系统架构 (Hyper-Exchange v1.0)
-
-项目遵循严格的分层设计与 MVC 架构，核心数据流向如下：
+## 系统架构（Hyper-Exchange v2.0）
 
 ```mermaid
-graph TD
-    Capture[捕获层 Capture] -->|"原始包 Raw Packet"| Common[基础设施层 Common]
-    Common -->|"SPSC 无锁队列"| Engine[引擎层 Engine]
-    Engine -->|"QSharedPointer 批量信号"| UI[表现层 Presentation]
+graph LR
+    subgraph Go 控制面
+        CLI[CLI 入口] -->|CGO 调用| CAPI[C API 接口]
+    end
+
+    subgraph C++ 数据面
+        CAPI -->|创建/启动| Engine[引擎上下文]
+        Engine --> Capture[捕获驱动]
+        Capture -->|原始包| SPSC[SPSC 无锁队列]
+        SPSC -->|多核分发| Pipeline1[PacketPipeline 1]
+        SPSC -->|多核分发| PipelineN[PacketPipeline N]
+        Pipeline1 & PipelineN -->|解析&检测| Security[SecurityEngine]
+        Security -->|AC 自动机| Alert[告警事件]
+        Security -->|高危触发| Forensic[异步取证落盘]
+    end
+
+    Alert -->|回调| GoCallback[Go 回调函数]
+    GoCallback -->|打印/推送| Terminal[终端输出]
 ```
 
-- **捕获层**: 封装 `libpcap`，负责从网卡获取二进制数据，并打上内核级纳秒时间戳。
-- **基础设施层**: 提供无锁对象池 (`ObjectPool`)、单生产者单消费者无锁环形队列 (`SPSCQueue`)。
-- **引擎层**: 包含核心绑定的多线程解析管线 (`PacketPipeline`) 和基于 AC 自动机的安全检测引擎 (`SecurityEngine`)。
-- **表现层**: 基于 Qt6 MVC 架构的可视化界面，使用虚拟列表 (`TrafficTableModel`) 支撑海量数据无阻塞渲染。
+- **捕获层**：支持 libpcap（通用）与 eBPF/AF_XDP（高性能零拷贝）双后端，从网卡获取原始数据包并打上纳秒时间戳。
+- **分发层**：基于五元组哈希将流量分发至多个 **SPSC 无锁环形队列**，每个队列绑定独立的 CPU 核心，消除缓存一致性开销。
+- **引擎层**：多线程 `PacketPipeline` 并行处理，集成 **Aho-Corasick 自动机** 实现 O(N) 多模式威胁检测，支持动态规则热加载。
+- **控制面**：Go 编译的 CLI 工具通过 CGO 绑定 C API，负责配置解析、规则下发、信号处理及回调事件输出。
 
-## 核心技术点
+## 核心特性
 
-1. **极致内存管理**: 基于无锁链表 (Lock-free List) 的对象池 (`ObjectPool`)，彻底规避热路径上的 `new/delete` 所带来的堆内存碎片和锁竞争。
-2. **多核无锁管线**: 摒弃传统的互斥锁队列，采用 `SPSCQueue` + 线程 CPU 亲和性 (Core Affinity) 绑定，实现极低延迟的数据包吞吐。
-3. **O(N) 多模式匹配**: 检测引擎内核集成 Aho-Corasick (AC) 自动机，支持 256 宽度的状态转移数组，流量检测耗时与规则数量完全解耦。
-4. **MVC 高性能渲染**: UI 层摒弃低效的 `QTableWidget`，采用 `QAbstractTableModel` 底层对接 `std::deque` 缓冲池。即使面对 10万+ 报文，界面依然保持 60 FPS 的极致顺滑。
+- **双模式捕获**：libpcap 通用抓包与 eBPF/XDP 零拷贝高性能捕获无缝切换。
+- **动态规则引擎**：Go 侧实时添加/删除规则，触发底层 AC 自动机重编译，无需重启引擎。
+- **无锁内存管理**：对象池（`ObjectPool`）与 SPSC 队列避免热路径上的内存分配与锁竞争。
+- **实时威胁检测**：基于 AC 自动机的多模式匹配，支持数千条规则的同时扫描。
+- **异步取证**：高危告警触发的 PCAP 存盘操作完全由后台线程处理，不阻塞检测管线。
+- **实时统计**：每秒刷新吞吐量、丢包数等指标，通过 Go 回调输出。
 
 ## 环境依赖
 
-- **操作系统**: Fedora Linux 42/43 (或兼容的 Linux 发行版)
-- **编译器**: GCC 15+ (支持 C++20)
-- **构建工具**: CMake 3.20+
-- **依赖库**:
-  - Qt 6.x (Core, Gui, Widgets, Network, Charts)
+- **操作系统**：Linux（推荐 Fedora 42/43、Ubuntu 24.04+）
+- **编译器**：GCC 14+ 或 Clang 18+（支持 C++20）
+- **构建工具**：CMake 3.20+
+- **依赖库**：
   - libpcap-devel
   - sqlite-devel
+  - libbpf-devel（可选，用于 eBPF 模式）
+  - xdp-tools / libxdp（可选）
 
 ## 构建与运行
 
-### 1. 安装依赖 (Fedora 环境)
+### 1. 安装依赖（Fedora）
 
-在终端中执行以下命令安装所有必需的开发库：
-
-```Bash
+```bash
 sudo dnf update -y
-sudo dnf install -y qt6-qtbase-devel qt6-qtcharts-devel libpcap-devel sqlite-devel cmake gcc-c++
+sudo dnf install -y cmake gcc-c++ libpcap-devel sqlite-devel libbpf-devel
 ```
 
-### 2. 编译项目
+### 2. 编译 C++ 核心库
 
-进入项目根目录，创建 Release 构建目录并进行编译：
-
-```Bash
-mkdir cmake-build-release && cd cmake-build-release
+```bash
+cd Sentinel-Flow
+mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 ```
 
-### 3. 权限与运行策略
+编译成功后将生成静态库 `build/libsentinel/libsentinel_core.a`。
 
-由于涉及网卡混杂模式抓包，程序需要底层网络嗅探权限。 **推荐方案**：使用 `setcap` 赋予二进制文件权限，这样可以直接以普通用户身份运行，体验最佳且最安全：
+### 3. 编译 Go CLI 工具
 
 ```bash
-./cmake-build-debug/SentinelApp
+cd ..  # 回到项目根目录
+go build -o sentinel-cli ./cmd/sentinel
 ```
 
-⚠️ **关于 Sudo 运行时的黑屏问题 (Known Issue)**： 如果在 Wayland/X11 桌面环境下使用 `sudo` 或 `sudo -E` 强制提权运行 GUI 程序，将导致普通用户的 OpenGL 硬件渲染上下文丢失，引发**窗口内部完全黑屏**。 **解决方案**：v6.0 版本已在 `main.cpp` 入口处强制注入 `QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);`，通过软件渲染降级完美规避了此环境隔离问题，无论以何种权限启动均可正常渲染。
+### 4. 赋予网络权限并运行
 
-## 最新架构演进 (v6.0 核心更新)
+```bash
+# 授予抓包权限（无需 sudo）
+sudo setcap cap_net_raw,cap_net_admin+eip ./sentinel-cli
 
-- **生命周期重构**: 修复了严重的 UI 挂载空指针问题，确立了 `页面实例化 -> setupUi -> AC树编译 -> 管线启动` 的严格时序屏障。
-- **跨线程零拷贝**: 全局注册 `ParsedPacket` 与 `QSharedPointer` 元类型，通过批量信号投递彻底解决跨线程的深拷贝性能损耗。
-- **AC 自动机内存加固**: 采用 `std::unique_ptr` 统一接管匹配节点，根绝内存泄漏与 UAF (Use-After-Free) 漏洞。
-- **并发锁降级**: 黑名单与规则引擎全面采用 `std::shared_mutex` (读写锁)，极大提升读多写少场景的并发性能。
-- **异步取证无阻塞**: 告警触发的 PCAP 存盘操作完全交由 `ForensicWorker` 后台异步执行，绝不占用网络解析时间片。
+# 启动引擎（默认捕获 lo 接口）
+./sentinel-cli
+```
+
+若需使用 eBPF 模式，请确保已加载 XDP 程序并修改 `binding.go` 中的 `enable_ebpf` 字段。
+
+## 命令行参数（计划支持）
+
+当前版本为演示版，接口硬编码为 `lo`。后续将支持以下参数：
+
+```bash
+sentinel-cli -i eth0 -r ./rules -w 4 --ebpf
+```
+
+- `-i`：指定监听的网络接口
+- `-r`：规则文件/目录路径
+- `-w`：工作线程数
+- `--ebpf`：启用 AF_XDP 零拷贝捕获
+
+## 目录结构
+
+```
+.
+├── cmd/sentinel/        # Go CLI 入口
+├── pkg/engine/          # CGO 绑定层
+├── libsentinel/         # C++ 核心引擎
+│   ├── include/         # 对外 C API 头文件
+│   └── src/             # 源码（捕获、解析、检测等）
+├── cmake/               # CMake 模块
+├── docs/                # 设计文档
+├── tests/               # 单元测试
+└── build/               # 构建产物
+```
 
 ## 许可证
 
-本项目暂仅供学术交流与毕业设计使用。
+本项目采用 MIT License 开源许可。

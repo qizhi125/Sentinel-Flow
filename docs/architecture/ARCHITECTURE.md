@@ -1,74 +1,229 @@
-# 核心架构设计
+# Sentinel-Flow 架构设计
 
-## 架构设计原则
+## 1. 概述
 
-Sentinel-Flow 的数据流基于数据面 (Data Plane) 与控制面 (Control Plane) 分离的原则设计，以支持高吞吐环境下的流量检测与可视化。
+Sentinel-Flow 采用 **C++ 高性能数据面 + Go 轻量控制面** 的分离式架构。数据面负责实时流量捕获、协议解析、威胁检测与证据留存，以 C++20 编写并编译为静态库；控制面由 Go 语言 CLI 工具实现，通过 CGO 绑定调用 C API，完成配置管理、规则下发及监控反馈。该设计兼顾了高性能底层处理与上层快速迭代的灵活性。
 
-**核心考量与约束：**
-
-1. **热路径零分配 (Zero-Allocation on Hot Path)**：在数据包捕获与解析的核心循环中，禁止直接调用 `new/delete`。系统采用预分配的无锁内存池 (`ObjectPool`) 托管内存块，以消除运行时的内存分配开销和碎片化问题。
-2. **无锁并发模型 (Lock-Free Concurrency)**：跨线程的数据传递弃用 `std::mutex`。采用基于 C++20 `std::atomic` 的 SPSC (单生产者单消费者) 队列，结合明确的内存序 (`std::memory_order`) 建立同步屏障。
-3. **读写隔离与事件批处理 (Read-Write Isolation)**：将高频的网络报文处理与低频的 UI 渲染严格隔离。后端解析引擎将结果装载为 `QVector` 进行批量投递，UI 线程作为慢速消费者按批次消费数据，配合 Qt 虚拟列表规避界面的重绘阻塞。
-
-## 全局系统拓扑
-
-系统数据流被划分为**数据面 (Data Plane)** 与**控制面 (Control Plane)**。跨边界的数据传递均通过智能指针托管物理内存，确保载荷在生命周期内的零拷贝流转。
+## 2. 整体架构图
 
 ```mermaid
-    graph TD
-        subgraph OS["Operating System / Kernel"]
-        NIC["Physical NIC 物理网卡"] -->|"cap_net_raw"| Socket["Raw Socket / libpcap"]
-        KernelTime["SO_TIMESTAMP 纳秒打戳"] -.-> Socket
-        end
-        
-        subgraph DataPlane["Data Plane 数据面 / C++20 Lock-Free"]
-        Socket -->|"1. 借用内存"| ObjPool[("ObjectPool 无锁内存池")]
-        ObjPool -->|"2. RawPacket"| Dispatcher["Hash 分流器"]
-        
-        Dispatcher -->|"3. 原子 Push"| SPSC1["SPSC 无锁环形队列 1"]
-        Dispatcher -->|"3. 原子 Push"| SPSC2["SPSC 无锁环形队列 N"]
-        
-        SPSC1 -->|"4. 独占 Core"| Pipe1["PacketPipeline 解析管线"]
-        SPSC2 -->|"4. 独占 Core"| Pipe2["PacketPipeline 解析管线"]
-        
-        Pipe1 & Pipe2 -->|"5. O(N) 零拷贝匹配"| AC["Aho-Corasick 安全引擎"]
-        end
-        
-        subgraph ControlPlane["Control Plane 控制面 / Qt6 GUI"]
-        AC -.->|"6a. 严重告警触发"| SQLite[("SQLite WAL 数据库")]
-        Pipe1 & Pipe2 -.->|"6b. QVector 批量抛出"| TTableModel["TrafficTableModel 虚拟列表"]
-        TTableModel -->|"7. 节流防抖重绘"| Views["TrafficMonitor / Forensic 视图层"]
-        Views -->|"8. 静态解剖渲染"| Renderer["PacketDetailRenderer 协议树"]
-        end
-        
-        style OS fill:#2c3e50,stroke:#34495e,color:#fff
-        style DataPlane fill:#c0392b,stroke:#e74c3c,color:#fff
-        style ControlPlane fill:#2980b9,stroke:#3498db,color:#fff
-        style AC fill:#8e44ad,stroke:#9b59b6,color:#fff
+graph TB
+    subgraph "用户态控制面 (Go)"
+        CLI[CLI 主程序 main.go]
+        Binding[engine 包 CGO 绑定]
+    end
 
+    subgraph "C API 边界"
+        capi[capi.h / capi_impl.cpp]
+    end
+
+    subgraph "C++ 数据面核心"
+        Context[EngineContext 引擎上下文]
+        Capture[捕获驱动]
+        Queue[SPSC 无锁队列组]
+        Pipeline[PacketPipeline 流水线组]
+        Parser[PacketParser 协议解析]
+        Inspector[SecurityEngine 检测引擎]
+        AC[Aho-Corasick 自动机]
+        DB[DatabaseManager SQLite]
+        Forensic[ForensicWorker 异步取证]
+    end
+
+    CLI --> Binding
+    Binding --> capi
+    capi --> Context
+    Context --> Capture
+    Capture -->|RawPacket| Queue
+    Queue -->|多队列分发| Pipeline
+    Pipeline --> Parser
+    Parser --> Inspector
+    Inspector --> AC
+    Inspector -->|Alert| DB
+    Inspector -->|高危| Forensic
+    Inspector -->|回调| Binding
+    Pipeline -->|统计回调| Binding
 ```
 
-------
+## 3. 分层详解
 
-## 核心组件交互与实现机制
+### 3.1 控制面（Go 层）
 
-### 1. PcapCapture：流量捕获与背压控制
-- **机制**：通过 `pcap_next_ex` 获取报文，并通过 `header->ts` 提取内核级纳秒时间戳。
-- **哈希分流**：根据报文的源 IP 与目的 IP 异或运算 (`saddr ^ daddr % queueCount`) 实现软 RSS 分流，确保同一 TCP 会话的报文被派发到相同的解析管线。
-- **防拥塞截断 (Backpressure)**：当目标 Worker 队列积压超过 5000 帧时，触发防御机制。捕获引擎停止借用完整内存，转而将报文硬截断为定长（仅保留 L2-L4 头部，丢弃应用层载荷），确保在极端洪峰下不丢失连接元数据。
+**位置**：`cmd/sentinel/`、`pkg/engine/`
 
-### 2. PacketPipeline：核绑定与批处理
-- **机制**：消费者线程启动时调用 `pthread_setaffinity_np` 绑定至特定物理 CPU 核心，以维持 L1/L2 缓存的局部性。
-- **UI 防抖批处理**：为避免逐包触发 Qt 信号导致 GUI 线程拥塞，管线内部维护了一个 `QVector<ParsedPacket>`。只有当累积达到 5000 个报文或定时器超过 150ms 时，才会将这批数据打包并交由 `QSharedPointer` 跨线程投递给模型层。
+**职责**：
 
-### 3. Aho-Corasick 引擎：多模式检测
-- **机制**：抛弃逐条正则匹配，在引擎初始化时预构建 AC 自动机状态机 (Trie 树及 Fail 指针)。
-- **特征**：不论内存中装载了多少条威胁特征规则，匹配的时间复杂度被严格限制在 $O(N)$，其中 $N$ 为该报文的载荷字节数，避免了由于规则库膨胀导致的 CPU 满载丢包。
+- 解析命令行参数（接口、规则路径、线程数等）
+- 通过 CGO 调用 `sentinel_engine_create` 初始化引擎上下文
+- 动态构建规则结构体，调用 `sentinel_engine_add_rule` 和 `sentinel_engine_reload_rules` 下发规则
+- 注册 Go 回调函数（`goAlertCallback`、`goStatsCallback`），接收来自 C++ 的告警与统计事件
+- 监听系统信号，优雅停止引擎并释放资源
 
-### 4. SentinelLauncher：动态权限下放
-- **机制**：通过探针调用 `socket(AF_PACKET)` 检查当前进程是否具备底层网络捕获权限。
-- **热重载**：若权限不足，程序通过 `fork` 衍生子进程执行 `setcap cap_net_raw,cap_net_admin=eip`，修改可执行文件自身权限，随后使用 `execv` 携带原始启动参数 (如 `--gui` / `--cli`) 重载进程，避免以 root 直接运行带来的显示服务（Wayland/X11）拒绝连接问题。
+**关键交互**：
 
-### 5. PacketDetailRenderer：启发式协议渲染
-- **机制**：提供独立的静态函数将数据包模型（MVC）投射为 `QTreeWidget` 视图。
-- **L7 载荷分析**：渲染引擎会统计载荷中的可打印 ASCII 字符比例。若比例超过 35%，则将其判定为文本协议（如 HTTP / SSDP）并按行展开渲染；否则，判定为二进制协议并输出标准 Wireshark 风格的 Hex 十六进制转储。
+```go
+handle := C.sentinel_engine_create(&conf)
+C.sentinel_engine_set_callbacks(handle, alertCb, statsCb, nil)
+C.sentinel_engine_add_rule(handle, &cRule)
+C.sentinel_engine_reload_rules(handle)
+C.sentinel_engine_start(handle)
+```
+
+### 3.2 C API 边界
+
+**位置**：`libsentinel/include/sentinel/capi.h`、`libsentinel/src/capi_impl.cpp`
+
+**职责**：
+
+- 定义纯 C 接口，供 CGO 直接调用
+- 封装 C++ 对象与智能指针，对外暴露不透明句柄 `SentinelEngineHandle`
+- 管理 `EngineContext` 生命周期，持有捕获驱动、工作队列和流水线实例
+- 将 Go 回调函数指针转换为 C++ 可调用的 `std::function`，并在检测线程中安全调用
+
+**核心数据结构**：
+
+```cpp
+struct EngineContext {
+    SentinelConfig config;
+    OnAlertCallback alert_cb;
+    OnStatsCallback stats_cb;
+    void* user_data;
+    ICaptureDriver* capture_driver;
+    std::vector<std::unique_ptr<PacketPipeline>> pipelines;
+    std::vector<std::unique_ptr<PacketQueue>> worker_queues;
+};
+```
+
+### 3.3 捕获驱动层
+
+**位置**：`libsentinel/src/capture/`
+
+**职责**：
+
+- 从网卡获取原始数据帧，支持两种后端：
+  - **PcapCapture**：基于 libpcap，兼容性好，适用于通用场景。
+  - **EBPFCapture**：基于 AF_XDP 零拷贝技术，性能极高，适用于万兆网络。
+- 将原始包封装为 `RawPacket` 结构，通过轮询方式推入多个 `SPSCQueue`，实现多核负载分发。
+- 驱动实现均为单例模式，全局仅一个实例运行。
+
+**接口抽象**：
+
+```cpp
+class ICaptureDriver {
+    virtual void init(const std::vector<PacketQueue*>& queues) = 0;
+    virtual void start(const std::string& device) = 0;
+    virtual void stop() = 0;
+};
+```
+
+### 3.4 分发与队列层
+
+**位置**：`libsentinel/src/common/queues/SPSCQueue.h`
+
+**职责**：
+
+- 提供单生产者单消费者（SPSC）无锁环形队列，作为捕获线程与工作线程之间的高速通道。
+- 使用 `alignas(64)` 缓存行对齐避免伪共享。
+- 支持带超时的阻塞等待 `popWait`，使工作线程在没有数据时高效休眠。
+
+### 3.5 流水线处理层（PacketPipeline）
+
+**位置**：`libsentinel/src/engine/pipeline/`
+
+**职责**：
+
+- 每个工作线程独占一个 `PacketPipeline` 实例和对应的输入队列。
+- 循环从队列取出 `RawPacket`，调用 `PacketParser::parse()` 进行协议解析。
+- 将解析后的 `ParsedPacket` 传递给 `IInspector`（即 `SecurityEngine`）进行威胁检测。
+- 批量收集解析后的报文，通过 `std::shared_ptr` 传递给消费端（如 UI 或日志模块），实现零拷贝数据共享。
+- 支持 CPU 亲和性绑定，减少线程迁移开销。
+
+**核心运行循环**：
+
+```cpp
+while (running) {
+    auto raw = inputQueue->popWait(100ms);
+    auto parsed = PacketParser::parse(raw);
+    if (auto alert = inspector->inspect(parsed)) {
+        // 存储告警，触发回调
+    }
+    batch.emplace_back(parsed);
+    if (batch full or timeout) flushBatch();
+}
+```
+
+### 3.6 检测引擎（SecurityEngine）
+
+**位置**：`libsentinel/src/engine/flow/SecurityEngine.h`
+
+**职责**：
+
+- 实现 `IInspector` 接口，提供核心检测能力。
+- 内部集成 **Aho-Corasick 自动机**，支持多模式字符串匹配，时间复杂度 O(N) 且与规则数量无关。
+- 规则通过 `addRule()` 动态添加，由 `compileRules()` 触发自动机构建。
+- 维护 IP 黑名单（支持动态增删）和告警抑制缓存，避免重复报警。
+- 检测到威胁后生成 `Alert` 结构，并调用 `DatabaseManager` 持久化，同时触发取证工作线程。
+
+**规则管理线程安全**：使用 `std::shared_mutex` 保护规则列表，读多写少场景下并发性能极佳。
+
+### 3.7 存储与取证
+
+**位置**：`libsentinel/src/engine/context/DatabaseManager.cpp`、`libsentinel/src/engine/workers/ForensicWorker.h`
+
+**职责**：
+
+- `DatabaseManager`：封装 SQLite3 操作，启用 WAL 模式提升并发写入能力，所有数据库访问均加锁保护。
+- `ForensicWorker`：独立后台线程，负责将高危告警对应的原始数据包写入 PCAP 文件，避免阻塞检测路径。
+
+## 4. 数据流时序
+
+```mermaid
+sequenceDiagram
+    participant Go as Go CLI
+    participant C as C API
+    participant Cap as Capture Driver
+    participant Q as SPSC Queue
+    participant PL as PacketPipeline
+    participant SE as SecurityEngine
+    participant CB as Go Callback
+
+    Go->>C: sentinel_engine_create()
+    Go->>C: sentinel_engine_add_rule()
+    Go->>C: sentinel_engine_reload_rules()
+    Go->>C: sentinel_engine_start()
+    C->>Cap: init(queues) & start(iface)
+    loop 捕获循环
+        Cap->>Q: push(RawPacket)
+    end
+    loop 工作线程循环
+        Q->>PL: popWait(RawPacket)
+        PL->>PL: PacketParser::parse()
+        PL->>SE: inspect(ParsedPacket)
+        SE-->>PL: optional<Alert>
+        PL->>C: threat callback (if alert)
+        C->>CB: goAlertCallback()
+        PL->>C: stats callback (periodic)
+        C->>CB: goStatsCallback()
+    end
+    Go->>C: sentinel_engine_stop()
+```
+
+## 5. 性能关键设计
+
+- **无锁化**：捕获到检测全链路无互斥锁，仅使用原子操作和内存序保证可见性。
+- **零拷贝**：`RawPacket` 使用对象池分配，`ParsedPacket` 通过 `shared_ptr` 批量传递，避免重复拷贝。
+- **多核并行**：每个 CPU 核心运行独立的流水线，队列数与线程数一致，数据通过五元组哈希均匀分发。
+- **批量处理**：工作线程以时间或数量为阈值批量提交结果，减少回调与 I/O 频率。
+- **eBPF 卸载**：XDP 程序可在网卡驱动层直接过滤或转发数据包，进一步降低 CPU 负载。
+
+## 6. 扩展点
+
+- **新增捕获后端**：实现 `ICaptureDriver` 接口即可（如 DPDK、netmap）。
+- **新增检测算法**：实现 `IInspector` 接口，并注入到 `PacketPipeline` 中。
+- **新增回调类型**：在 `capi.h` 中扩展回调函数指针，并在 `capi_impl.cpp` 中调用。
+
+## 7. 待优化项
+
+- 当前 eBPF 探针未纳入 CMake 构建，需手动编译 `xdp_prog.c`。
+- CLI 参数硬编码，需引入 `flag` 包增强灵活性。
+- 规则 ID 解析依赖字符串截取，应改为直接传递整型字段。
+
