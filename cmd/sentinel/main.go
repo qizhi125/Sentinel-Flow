@@ -5,8 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/yourname/sentinel-flow/pkg/engine"
 	"gopkg.in/yaml.v3"
 )
@@ -15,26 +20,63 @@ var (
 	iface   = flag.String("i", "lo", "网络接口名称 (e.g., eth0, lo)")
 	rules   = flag.String("r", "./configs/rules.yaml", "YAML规则配置文件路径")
 	workers = flag.Int("w", 4, "工作线程数量 (1-64)")
-	ebpf    = flag.Bool("ebpf", false, "启用 eBPF/AF_XDP 零拷贝捕获")
+	ebpf    = flag.Bool("ebpf", false, "启用 eBPF 捕获")
+	offline = flag.String("offline", "", "离线 PCAP 路径")
+	verbose = flag.Bool("v", false, "启用详细日志输出 (Verbose 模式)")
 	help    = flag.Bool("h", false, "显示帮助信息")
 )
 
-// RuleConfig 用于映射 YAML 结构
+func logDebug(format string, a ...interface{}) {
+	if *verbose {
+		fmt.Printf(format, a...)
+	}
+}
+
 type RuleConfig struct {
 	Rules []engine.Rule `yaml:"rules"`
 }
 
-// loadRulesFromFile 读取并解析 YAML 规则文件
 func loadRulesFromFile(filepath string) ([]engine.Rule, error) {
 	data, err := os.ReadFile(filepath)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	var config RuleConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
+	if err := yaml.Unmarshal(data, &config); err != nil { return nil, err }
 	return config.Rules, nil
+}
+
+func watchRules(rulePath string, e *engine.Engine) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil { return }
+	defer watcher.Close()
+	if err := watcher.Add(filepath.Dir(rulePath)); err != nil { return }
+
+	var mu sync.Mutex
+	var timer *time.Timer
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok { return }
+			if !strings.HasSuffix(event.Name, filepath.Base(rulePath)) { continue }
+
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Chmod) {
+				mu.Lock()
+				if timer != nil { timer.Stop() }
+				timer = time.AfterFunc(500*time.Millisecond, func() {
+					logDebug("\n🔄 监听到 [%s] 变更，正在热重载...\n", rulePath)
+					rulesList, err := loadRulesFromFile(rulePath)
+					if err != nil { return }
+					e.ClearRules()
+					for _, r := range rulesList { e.AddRule(r) }
+					e.ReloadRules()
+					logDebug("✅ 规则热重载完成！当前生效: %d 条\n", len(rulesList))
+				})
+				mu.Unlock()
+			}
+		case <-watcher.Errors:
+			return
+		}
+	}
 }
 
 func main() {
@@ -45,39 +87,29 @@ func main() {
 		os.Exit(0)
 	}
 
-	fmt.Printf("🛡️  Sentinel-Flow IDS v2.0 (YAML 动态规则版)\n")
-	fmt.Printf("⚙️  配置: 接口=%s, 规则=%s, 线程=%d, eBPF=%v\n\n", *iface, *rules, *workers, *ebpf)
-
-	// 注意：这里调用你 binding.go 中实际的方法，如果是 NewEngineWithConfig 请替换
-	e := engine.NewEngine(*iface, *rules)
+	fmt.Printf("🛡️  Sentinel-Flow IDS v2.0\n")
+	e := engine.NewEngineWithConfig(*iface, *rules, *workers, *ebpf, *offline, *verbose)
 	defer e.Close()
 
-	fmt.Printf("📦 正在从 %s 加载检测规则...\n", *rules)
 	rulesList, err := loadRulesFromFile(*rules)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️ 读取规则失败: %v (将使用空规则集启动)\n", err)
-	} else {
-		fmt.Printf("✅ 成功解析 %d 条规则，正在下发至 C++ 引擎...\n", len(rulesList))
-		for _, r := range rulesList {
-			e.AddRule(r)
-		}
+	if err == nil {
+		logDebug("📦 成功解析 %d 条规则，正在下发...\n", len(rulesList))
+		for _, r := range rulesList { e.AddRule(r) }
 	}
-
-	// 触发底层 C++ 引擎重新编译 Aho-Corasick 自动机
 	e.ReloadRules()
-	fmt.Println("✅ 底层自动机编译就绪")
 
 	if err := e.Start(); err != nil {
-		fmt.Printf("❌ 引擎启动错误: %v\n", err)
+		fmt.Printf("❌ 启动错误: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("🛰️  引擎正在运行。按 Ctrl+C 停止...\n")
+	go watchRules(*rules, e)
+	logDebug("🛰️  引擎正在运行。按 Ctrl+C 停止...\n")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	fmt.Println("\n\n🛑 正在停止引擎并清理资源...")
+	logDebug("\n\n🛑 正在停止引擎...\n")
 	e.Stop()
 }

