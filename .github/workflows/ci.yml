@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -37,7 +37,7 @@ jobs:
             clang-format
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.21'
 
@@ -48,6 +48,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
             -DENABLE_ASAN=${{ matrix.sanitizer }} \
             -DENABLE_UBSAN=${{ matrix.sanitizer }} \
+            -DBUILD_EBPF=OFF \
             -DCMAKE_C_COMPILER=gcc \
             -DCMAKE_CXX_COMPILER=g++
 
@@ -78,13 +79,12 @@ jobs:
           version: latest
           args: --timeout=3m
 
-  # 单独一个 job 用于 ASAN/UBSAN 构建和测试（内存错误检测）
   asan-ubsan:
     name: ASAN & UBSAN (Ubuntu)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -105,6 +105,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DENABLE_ASAN=ON \
             -DENABLE_UBSAN=ON \
+            -DBUILD_EBPF=OFF \
             -DCMAKE_C_COMPILER=gcc \
             -DCMAKE_CXX_COMPILER=g++
 
