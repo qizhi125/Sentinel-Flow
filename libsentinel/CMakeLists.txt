@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(libsentinel)
 
-option(BUILD_EBPF "Build eBPF XDP program" ON)
+option(BUILD_EBPF "Build eBPF XDP program and driver" ON)
 
 # 查找必要的依赖
 find_package(PCAP REQUIRED)
@@ -18,6 +18,13 @@ set(CORE_SOURCES
         src/engine/flow/SecurityEngine.cpp
         src/engine/pipeline/PacketPipeline.cpp
 )
+
+if(BUILD_EBPF)
+    list(APPEND CORE_SOURCES src/capture/driver/EBPFCapture.cpp)
+    message(STATUS "eBPF driver source included")
+else()
+    message(STATUS "eBPF driver source excluded (BUILD_EBPF=OFF)")
+endif()
 
 add_library(sentinel_core STATIC ${CORE_SOURCES})
 
