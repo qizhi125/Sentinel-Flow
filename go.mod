@@ -1,4 +1,4 @@
-module github.com/yourname/sentinel-flow
+module github.com/qizhi125/Sentinel-Flow
 
 go 1.25.8
 

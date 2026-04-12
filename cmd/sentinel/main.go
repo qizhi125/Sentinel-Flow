@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/yourname/sentinel-flow/pkg/engine"
+	"github.com/qizhi125/Sentinel-Flow/pkg/engine"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,7 +47,7 @@ func loadRulesFromFile(filepath string) ([]engine.Rule, error) {
 func watchRules(rulePath string, e *engine.Engine) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil { return }
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 	if err := watcher.Add(filepath.Dir(rulePath)); err != nil { return }
 
 	var mu sync.Mutex

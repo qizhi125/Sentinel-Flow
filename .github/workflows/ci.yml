@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (Ubuntu)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build-type: [Release, Debug]
+        sanitizer: [OFF]
+        include:
+          - build-type: Debug
+            sanitizer: ON
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            g++ \
+            clang \
+            libpcap-dev \
+            libsqlite3-dev \
+            libbpf-dev \
+            golang \
+            clang-tidy \
+            clang-format
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Configure CMake (C++ library)
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
+            -DENABLE_ASAN=${{ matrix.sanitizer }} \
+            -DENABLE_UBSAN=${{ matrix.sanitizer }} \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build C++ library and tests
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Run C++ unit tests
+        run: |
+          cd build
+          ctest --output-on-failure
+
+      - name: Build Go CLI
+        run: |
+          go build -v -o bin/sentinel-cli ./cmd/sentinel
+
+      - name: Run Go tests (if any)
+        run: |
+          go test -v ./...
+
+      - name: Check code formatting (C++)
+        run: |
+          find libsentinel/src -name '*.cpp' -o -name '*.h' | xargs clang-format -i -style=file
+          git diff --exit-code || (echo "C++ code is not formatted. Run clang-format." && exit 1)
+
+      - name: Lint Go code
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=3m
+
+  # 单独一个 job 用于 ASAN/UBSAN 构建和测试（内存错误检测）
+  asan-ubsan:
+    name: ASAN & UBSAN (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            g++ \
+            clang \
+            libpcap-dev \
+            libsqlite3-dev \
+            libbpf-dev \
+            golang
+
+      - name: Configure CMake with sanitizers
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DENABLE_ASAN=ON \
+            -DENABLE_UBSAN=ON \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Run tests under sanitizers
+        run: |
+          cd build
+          ctest --output-on-failure
