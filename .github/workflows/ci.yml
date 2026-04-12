@@ -32,6 +32,8 @@ jobs:
             libpcap-dev \
             libsqlite3-dev \
             libbpf-dev \
+            libasan8 \
+            libubsan1 \
             golang \
             clang-tidy \
             clang-format
@@ -96,6 +98,8 @@ jobs:
             libpcap-dev \
             libsqlite3-dev \
             libbpf-dev \
+            libasan8 \
+            libubsan1 \
             golang
 
       - name: Configure CMake with sanitizers

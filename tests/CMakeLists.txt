@@ -32,6 +32,13 @@ target_include_directories(sentinel_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/libsentinel/src
 )
 
+if(ENABLE_ASAN)
+    target_link_options(sentinel_tests PRIVATE -fsanitize=address)
+endif()
+if(ENABLE_UBSAN)
+    target_link_options(sentinel_tests PRIVATE -fsanitize=undefined)
+endif()
+
 target_link_libraries(sentinel_tests PRIVATE
         sentinel_core
         ${GTEST_LIBRARIES}
