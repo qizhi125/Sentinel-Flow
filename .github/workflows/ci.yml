@@ -45,6 +45,7 @@ jobs:
 
       - name: Configure CMake (C++ library)
         run: |
+          rm -rf build
           mkdir build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
