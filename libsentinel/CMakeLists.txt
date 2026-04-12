@@ -12,13 +12,13 @@ set(CORE_SOURCES
         src/common/memory/ObjectPool.h
         src/common/queues/SPSCQueue.h
         src/capture/impl/PcapCapture.cpp
-        src/capture/driver/EBPFCapture.cpp
         src/engine/context/DatabaseManager.cpp
         src/engine/flow/PacketParser.cpp
         src/engine/flow/SecurityEngine.cpp
         src/engine/pipeline/PacketPipeline.cpp
 )
 
+# 条件性添加 eBPF 驱动源文件
 if(BUILD_EBPF)
     list(APPEND CORE_SOURCES src/capture/driver/EBPFCapture.cpp)
     message(STATUS "eBPF driver source included")
@@ -39,7 +39,7 @@ target_link_libraries(sentinel_core PUBLIC pcap sqlite3 stdc++ xdp bpf)
 find_program(CLANG_EXE clang)
 
 if(CLANG_EXE AND BUILD_EBPF)
-    message(STATUS "发现 Clang: ${CLANG_EXE}，已启用 eBPF 自动编译")
+    message(STATUS "Found Clang: ${CLANG_EXE}, eBPF auto-compilation enabled")
 
     set(BPF_OBJ_OUT ${CMAKE_CURRENT_BINARY_DIR}/xdp_prog.o)
 
@@ -54,7 +54,7 @@ if(CLANG_EXE AND BUILD_EBPF)
     add_custom_target(bpf_prog ALL DEPENDS ${BPF_OBJ_OUT})
     add_dependencies(sentinel_core bpf_prog)
 elseif(BUILD_EBPF)
-    message(WARNING "未找到 clang，eBPF 探针编译被跳过")
+    message(WARNING "Clang not found, eBPF program compilation skipped")
 else()
-    message(STATUS "eBPF 编译被跳过 (BUILD_EBPF=OFF)")
+    message(STATUS "eBPF compilation skipped (BUILD_EBPF=OFF)")
 endif()
