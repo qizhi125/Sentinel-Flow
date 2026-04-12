@@ -32,7 +32,8 @@ target_include_directories(sentinel_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(sentinel_core PUBLIC pcap sqlite3 stdc++)
+
+target_link_libraries(sentinel_core PUBLIC pcap sqlite3 stdc++ xdp bpf)
 
 # eBPF 探针自动编译逻辑
 find_program(CLANG_EXE clang)
