@@ -12,44 +12,43 @@
 
 class DatabaseManager {
 public:
-  static DatabaseManager &instance();
+    static DatabaseManager& instance();
 
-  bool init(const std::string &dbPath = "sentinel_data.db");
-  void shutdown();
+    bool init(const std::string& dbPath = "sentinel_data.db");
+    void shutdown();
 
-  void saveAlert(const Alert &alert);
-  std::vector<Alert> loadRecentAlerts(int limit = 100);
+    void saveAlert(const Alert& alert);
+    std::vector<Alert> loadRecentAlerts(int limit = 100);
 
-  void saveRule(const IdsRule &rule);
-  void saveRulesTransaction(const std::vector<IdsRule> &rulesList);
-  void deleteRule(int id);
-  void clearRules();
-  std::vector<IdsRule> loadRules();
+    void saveRule(const IdsRule& rule);
+    void saveRulesTransaction(const std::vector<IdsRule>& rulesList);
+    void deleteRule(int id);
+    void clearRules();
+    std::vector<IdsRule> loadRules();
 
-  void saveBlacklist(const std::string &ip, const std::string &reason);
-  void deleteBlacklist(const std::string &ip);
-  std::vector<std::pair<std::string, std::string>> loadBlacklist();
+    void saveBlacklist(const std::string& ip, const std::string& reason);
+    void deleteBlacklist(const std::string& ip);
+    std::vector<std::pair<std::string, std::string>> loadBlacklist();
 
-  void saveConfig(const std::string &key, const std::string &value);
-  std::string loadConfig(const std::string &key,
-                         const std::string &defaultVal = "");
+    void saveConfig(const std::string& key, const std::string& value);
+    std::string loadConfig(const std::string& key, const std::string& defaultVal = "");
 
 private:
-  DatabaseManager() = default;
-  ~DatabaseManager();
+    DatabaseManager() = default;
+    ~DatabaseManager();
 
-  DatabaseManager(const DatabaseManager &) = delete;
-  DatabaseManager &operator=(const DatabaseManager &) = delete;
+    DatabaseManager(const DatabaseManager&) = delete;
+    DatabaseManager& operator=(const DatabaseManager&) = delete;
 
-  void workerLoop();
+    void workerLoop();
 
-  sqlite3 *db = nullptr;
+    sqlite3* db = nullptr;
 
-  std::queue<Alert> alertQueue;
-  std::mutex queueMutex;
-  std::condition_variable queueCv;
-  std::thread workerThread;
-  std::atomic<bool> running{false};
+    std::queue<Alert> alertQueue;
+    std::mutex queueMutex;
+    std::condition_variable queueCv;
+    std::thread workerThread;
+    std::atomic<bool> running{false};
 
-  mutable std::mutex dbMutex;
+    mutable std::mutex dbMutex;
 };
