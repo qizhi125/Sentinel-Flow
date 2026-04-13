@@ -43,9 +43,21 @@ if(CLANG_EXE AND BUILD_EBPF)
 
     set(BPF_OBJ_OUT ${CMAKE_CURRENT_BINARY_DIR}/xdp_prog.o)
 
+    execute_process(COMMAND uname -m OUTPUT_VARIABLE ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(MULTIARCH_DIR "/usr/include/${ARCH}-linux-gnu")
+    if(EXISTS ${MULTIARCH_DIR})
+        set(BPF_MULTIARCH_INCLUDE "-I${MULTIARCH_DIR}")
+        message(STATUS "Detected Multi-Arch OS (e.g. Ubuntu), added include: ${BPF_MULTIARCH_INCLUDE}")
+    else()
+        set(BPF_MULTIARCH_INCLUDE "")
+    endif()
+
     add_custom_command(
             OUTPUT ${BPF_OBJ_OUT}
-            COMMAND ${CLANG_EXE} -O2 -target bpf -g -c ${CMAKE_CURRENT_SOURCE_DIR}/src/capture/driver/xdp_prog.c -o ${BPF_OBJ_OUT}
+            COMMAND ${CLANG_EXE} -O2 -target bpf -g -c
+                    ${BPF_MULTIARCH_INCLUDE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/capture/driver/xdp_prog.c
+                    -o ${BPF_OBJ_OUT}
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/capture/driver/xdp_prog.c
             COMMENT "Compiling eBPF program: xdp_prog.c -> xdp_prog.o"
             VERBATIM
