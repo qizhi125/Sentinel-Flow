@@ -65,10 +65,12 @@ jobs:
           ctest --output-on-failure
 
       - name: Build Go CLI
+        if: matrix.sanitizer == 'OFF'
         run: |
           go build -v -o bin/sentinel-cli ./cmd/sentinel
 
       - name: Run Go tests (if any)
+        if: matrix.sanitizer == 'OFF'
         run: |
           go test -v ./...
 

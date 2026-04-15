@@ -1,8 +1,8 @@
 #pragma once
 #include <atomic>
 #include <chrono>
-#include <stdexcept>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
