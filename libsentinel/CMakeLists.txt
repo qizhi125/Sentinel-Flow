@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(libsentinel)
 
 option(BUILD_EBPF "Build eBPF XDP program and driver" ON)
+include(CheckIncludeFile)
 
 # 查找必要的依赖
 find_package(PCAP REQUIRED)
@@ -33,7 +34,11 @@ target_include_directories(sentinel_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(sentinel_core PUBLIC pcap sqlite3 stdc++ xdp bpf)
+target_link_libraries(sentinel_core PUBLIC pcap sqlite3 stdc++)
+
+if(BUILD_EBPF)
+    target_link_libraries(sentinel_core PUBLIC xdp bpf)
+endif()
 
 # eBPF 探针自动编译逻辑
 find_program(CLANG_EXE clang)
@@ -42,14 +47,19 @@ if(CLANG_EXE AND BUILD_EBPF)
     message(STATUS "Found Clang: ${CLANG_EXE}, eBPF auto-compilation enabled")
 
     set(BPF_OBJ_OUT ${CMAKE_CURRENT_BINARY_DIR}/xdp_prog.o)
+    set(BPF_MULTIARCH_INCLUDE "")
+    set(BPF_MULTIARCH_DIR "/usr/include/${CMAKE_LIBRARY_ARCHITECTURE}")
 
-    execute_process(COMMAND uname -m OUTPUT_VARIABLE ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
-    set(MULTIARCH_DIR "/usr/include/${ARCH}-linux-gnu")
-    if(EXISTS ${MULTIARCH_DIR})
-        set(BPF_MULTIARCH_INCLUDE "-I${MULTIARCH_DIR}")
-        message(STATUS "Detected Multi-Arch OS (e.g. Ubuntu), added include: ${BPF_MULTIARCH_INCLUDE}")
-    else()
-        set(BPF_MULTIARCH_INCLUDE "")
+    if(CMAKE_LIBRARY_ARCHITECTURE AND EXISTS "${BPF_MULTIARCH_DIR}")
+        set(BPF_MULTIARCH_INCLUDE "-I${BPF_MULTIARCH_DIR}")
+        message(STATUS "Detected multiarch include dir: ${BPF_MULTIARCH_DIR}")
+    endif()
+
+    check_include_file("asm/types.h" HAVE_ASM_TYPES_H)
+    if(NOT HAVE_ASM_TYPES_H)
+        message(FATAL_ERROR
+                "Missing kernel UAPI header asm/types.h. "
+                "Please install linux-libc-dev (Debian/Ubuntu) or the equivalent kernel headers package.")
     endif()
 
     add_custom_command(

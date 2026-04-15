@@ -74,8 +74,7 @@ jobs:
 
       - name: Check code formatting (C++)
         run: |
-          find libsentinel/src -name '*.cpp' -o -name '*.h' | xargs clang-format -i -style=file
-          git diff --exit-code || (echo "C++ code is not formatted. Run clang-format." && exit 1)
+          find libsentinel/src \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format --dry-run --Werror -style=file
 
       - name: Lint Go code
         uses: golangci/golangci-lint-action@v6

@@ -1,4 +1,6 @@
 #pragma once
+#include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -25,8 +27,9 @@ public:
         if (pattern.empty())
             return;
         Node* curr = root.get();
+        const auto& map = upperMap();
         for (uint8_t c : pattern) {
-            uint8_t idx = static_cast<uint8_t>(std::toupper(c));
+            uint8_t idx = map[c];
             if (!curr->next[idx]) {
                 auto newNode = std::make_unique<Node>();
                 curr->next[idx] = newNode.get();
@@ -71,8 +74,9 @@ public:
         if (!root)
             return nullptr;
         Node* curr = root.get();
+        const auto& map = upperMap();
         for (uint8_t c : data) {
-            curr = curr->next[static_cast<uint8_t>(std::toupper(c))];
+            curr = curr->next[map[c]];
             if (!curr->ruleIds.empty())
                 return &curr->ruleIds;
         }
@@ -80,6 +84,17 @@ public:
     }
 
 private:
+    static const std::array<uint8_t, 256>& upperMap() {
+        static const std::array<uint8_t, 256> map = [] {
+            std::array<uint8_t, 256> m{};
+            for (int i = 0; i < 256; ++i) {
+                m[static_cast<size_t>(i)] = static_cast<uint8_t>(std::toupper(static_cast<unsigned char>(i)));
+            }
+            return m;
+        }();
+        return map;
+    }
+
     std::unique_ptr<Node> root;
     std::vector<std::unique_ptr<Node>> allNodes;
 };
