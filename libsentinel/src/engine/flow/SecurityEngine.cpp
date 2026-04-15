@@ -70,14 +70,14 @@ void SecurityEngine::cleanupSuppressionCache(uint64_t currentMs) {
             ++it;
         }
     }
-    lastCacheCleanupTime = currentMs;
+    lastCacheCleanupTime.store(currentMs, std::memory_order_relaxed);
 }
 
 std::optional<Alert> SecurityEngine::inspect(const ParsedPacket& packet) {
     if (packet.payloadData.empty())
         return std::nullopt;
 
-    const std::vector<int>* hitRuleIds = nullptr;
+    IdsRule matchedRule;
     {
         std::shared_lock lock(rulesMutex);
 
@@ -85,47 +85,48 @@ std::optional<Alert> SecurityEngine::inspect(const ParsedPacket& packet) {
         if (rules.empty() || !acDetector)
             return std::nullopt;
 
-        hitRuleIds = acDetector->match(packet.payloadData);
+        const std::vector<int>* hitRuleIds = acDetector->match(packet.payloadData);
+        if (!hitRuleIds || hitRuleIds->empty())
+            return std::nullopt;
 
-        if (hitRuleIds && !hitRuleIds->empty()) {
-            // 关键修复 2：使用线程安全的 find() 替代 operator[]
-            auto it = rulesMap.find(hitRuleIds->at(0));
-            if (it == rulesMap.end())
-                return std::nullopt;
-            const IdsRule& rule = it->second;
+        // 关键修复 2：使用线程安全的 find() 替代 operator[]
+        auto it = rulesMap.find(hitRuleIds->at(0));
+        if (it == rulesMap.end())
+            return std::nullopt;
+        if (!(it->second.protocol == "ANY" || it->second.protocol == packet.protocol))
+            return std::nullopt;
 
-            if (rule.protocol == "ANY" || rule.protocol == packet.protocol) {
-                uint64_t currentMs = packet.timestamp;
-                std::string cacheKey = std::to_string(packet.srcIp) + "_" + std::to_string(rule.id);
+        matchedRule = it->second;
+    }
 
-                {
-                    std::shared_lock readLock(suppressionMutex);
-                    auto cacheIt = suppressionCache.find(cacheKey);
-                    if (cacheIt != suppressionCache.end() && (currentMs - cacheIt->second) < SUPPRESSION_WINDOW_MS) {
-                        return std::nullopt;
-                    }
-                }
+    uint64_t currentMs = packet.timestamp;
+    std::string cacheKey = std::to_string(packet.srcIp) + "_" + std::to_string(matchedRule.id);
 
-                {
-                    std::unique_lock writeLock(suppressionMutex);
-                    suppressionCache[cacheKey] = currentMs;
-                }
-
-                if (currentMs - lastCacheCleanupTime > 10000) {
-                    cleanupSuppressionCache(currentMs);
-                }
-
-                Alert alert = {static_cast<uint64_t>(time(nullptr)), rule.level, packet.srcIp, rule.description,
-                               "RULE-" + std::to_string(rule.id)};
-
-                if (alert.level >= Alert::High) {
-                    forensicWorker_.enqueue(packet);
-                }
-                return alert;
-            }
+    {
+        std::shared_lock readLock(suppressionMutex);
+        auto cacheIt = suppressionCache.find(cacheKey);
+        if (cacheIt != suppressionCache.end() && (currentMs - cacheIt->second) < SUPPRESSION_WINDOW_MS) {
+            return std::nullopt;
         }
     }
-    return std::nullopt;
+
+    {
+        std::unique_lock writeLock(suppressionMutex);
+        suppressionCache[cacheKey] = currentMs;
+    }
+
+    uint64_t lastCleanup = lastCacheCleanupTime.load(std::memory_order_relaxed);
+    if (currentMs - lastCleanup > 10000) {
+        cleanupSuppressionCache(currentMs);
+    }
+
+    Alert alert = {static_cast<uint64_t>(time(nullptr)), matchedRule.level, packet.srcIp, matchedRule.description,
+                   "RULE-" + std::to_string(matchedRule.id)};
+
+    if (alert.level >= Alert::High) {
+        forensicWorker_.enqueue(packet);
+    }
+    return alert;
 }
 
 void SecurityEngine::blockIp(uint32_t ip) {

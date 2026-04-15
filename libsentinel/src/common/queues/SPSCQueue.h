@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -10,8 +11,9 @@ namespace sentinel::common {
 template <typename T> class SPSCQueue {
 public:
     explicit SPSCQueue(size_t capacity = 65536) : buffer(capacity), mask(capacity - 1) {
-        // 确保 capacity 是 2 的幂
-        // if ((capacity & (capacity - 1)) != 0) { ... }
+        if (capacity < 2 || (capacity & (capacity - 1)) != 0) {
+            throw std::invalid_argument("SPSCQueue capacity must be >= 2 and a power of two");
+        }
     }
 
     bool push(T value) {

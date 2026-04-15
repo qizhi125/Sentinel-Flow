@@ -143,6 +143,12 @@ std::optional<ParsedPacket> PacketParser::parse(const RawPacket& raw) {
     const struct iphdr* ipHeader = (struct iphdr*)(data + offset);
     if (ipHeader->version != 4)
         return std::nullopt;
+    if (ipHeader->ihl < 5)
+        return std::nullopt;
+
+    uint32_t ipHeaderLen = ipHeader->ihl * 4;
+    if (offset > length || ipHeaderLen > (length - offset))
+        return std::nullopt;
 
     uint32_t ipTotalLen = ntohs(ipHeader->tot_len);
     if (offset + ipTotalLen < length) {
@@ -153,7 +159,7 @@ std::optional<ParsedPacket> PacketParser::parse(const RawPacket& raw) {
     pkt.dstIp = ntohl(ipHeader->daddr);
     pkt.ttl = ipHeader->ttl;
 
-    uint32_t protocolOffset = offset + ipHeader->ihl * 4;
+    uint32_t protocolOffset = offset + ipHeaderLen;
     if (length < protocolOffset)
         return std::nullopt;
 

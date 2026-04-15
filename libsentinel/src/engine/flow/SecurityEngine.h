@@ -3,6 +3,7 @@
 #include "common/types/NetworkTypes.h"
 #include "engine/interface/IInspector.h"
 #include "engine/workers/ForensicWorker.h"
+#include <atomic>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -54,7 +55,7 @@ private:
     mutable std::shared_mutex suppressionMutex;
     static constexpr uint64_t SUPPRESSION_WINDOW_MS = 2000;
 
-    uint64_t lastCacheCleanupTime = 0;
+    std::atomic<uint64_t> lastCacheCleanupTime{0};
     void cleanupSuppressionCache(uint64_t currentMs);
 
     std::unordered_set<uint32_t> m_blacklistedIps;

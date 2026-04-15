@@ -42,7 +42,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25.X'
+          go-version: '1.25.x'
 
       - name: Configure CMake (C++ library)
         run: |
