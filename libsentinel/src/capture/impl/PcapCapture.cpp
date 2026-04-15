@@ -13,12 +13,33 @@ void PcapCapture::init(const std::vector<sentinel::capture::PacketQueue*>& queue
     queueCount = queues.size();
 }
 
-void PcapCapture::start(const std::string& device) {
+bool PcapCapture::start(const std::string& device) {
     if (running)
-        return;
+        return true;
     currentDevice = device;
+
+    char errbuf[PCAP_ERRBUF_SIZE];
+    {
+        std::unique_lock lock(handleMutex);
+        if (handle) {
+            pcap_close(handle);
+            handle = nullptr;
+        }
+        if (isOffline) {
+            handle = pcap_open_offline(currentDevice.c_str(), errbuf);
+        } else {
+            handle = pcap_open_live(currentDevice.c_str(), 2048, 1, 10, errbuf);
+        }
+    }
+
+    if (!handle) {
+        std::cerr << "❌ [PcapCapture] Error: " << errbuf << std::endl;
+        return false;
+    }
+
     running = true;
     captureThread = std::thread(&PcapCapture::captureLoop, this);
+    return true;
 }
 
 void PcapCapture::stop() {
@@ -47,23 +68,17 @@ int PcapCapture::hashPacket(const uint8_t* data, int len, uint32_t offset) {
 }
 
 void PcapCapture::captureLoop() {
-    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t* localHandle = nullptr;
     {
-        std::unique_lock lock(handleMutex);
-        if (isOffline) {
-            handle = pcap_open_offline(currentDevice.c_str(), errbuf);
-        } else {
-            handle = pcap_open_live(currentDevice.c_str(), 2048, 1, 10, errbuf);
-        }
-
-        if (!handle) {
-            std::cerr << "❌ [PcapCapture] Error: " << errbuf << std::endl;
-            running = false;
-            return;
-        }
+        std::shared_lock lock(handleMutex);
+        localHandle = handle;
+    }
+    if (!localHandle) {
+        running = false;
+        return;
     }
 
-    int dlt = pcap_datalink(handle);
+    int dlt = pcap_datalink(localHandle);
     uint32_t linkOffset = 14;
     if (dlt == DLT_LINUX_SLL)
         linkOffset = 16;
@@ -80,7 +95,7 @@ void PcapCapture::captureLoop() {
     struct pcap_pkthdr* header;
     const u_char* pkt_data;
     while (running) {
-        int res = pcap_next_ex(handle, &header, &pkt_data);
+        int res = pcap_next_ex(localHandle, &header, &pkt_data);
         if (res == -2) {
             if (isVerbose)
                 std::cout << "\n✅ 离线 PCAP 读取完毕 (EOF)" << std::endl;

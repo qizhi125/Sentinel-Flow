@@ -76,8 +76,9 @@ func NewEngineWithConfig(iface string, rulesPath string, threads int, enableEbpf
 func (e *Engine) ClearRules() { C.sentinel_engine_clear_rules(e.handle) }
 func (e *Engine) ReloadRules() { C.sentinel_engine_reload_rules(e.handle) }
 func (e *Engine) Start() error {
-	if C.sentinel_engine_start(e.handle) != 0 {
-		return fmt.Errorf("failed to start C++ engine")
+	errCode := C.sentinel_engine_start(e.handle)
+	if errCode != 0 {
+		return fmt.Errorf("C++ 引擎底层驱动启动失败, 错误码: %d", int(errCode))
 	}
 	return nil
 }

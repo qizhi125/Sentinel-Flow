@@ -80,6 +80,21 @@ int sentinel_engine_start(SentinelEngineHandle handle) {
     if (!ctx)
         return -1;
 
+    auto rollbackPipelines = [ctx]() {
+        for (auto& pipeline : ctx->pipelines) {
+            if (pipeline) {
+                pipeline->stopPipeline();
+            }
+        }
+        for (auto& pipeline : ctx->pipelines) {
+            if (pipeline) {
+                pipeline->wait();
+            }
+        }
+        ctx->pipelines.clear();
+        ctx->worker_queues.clear();
+    };
+
     uint32_t threads = ctx->config.num_worker_threads > 0 ? ctx->config.num_worker_threads : 1;
     ctx->worker_queues.reserve(threads);
     ctx->pipelines.reserve(threads);
@@ -130,7 +145,11 @@ int sentinel_engine_start(SentinelEngineHandle handle) {
         pcapDriver.setVerbose(ctx->config.verbose != 0);
         ctx->capture_driver = &pcapDriver;
         ctx->capture_driver->init(raw_queues);
-        ctx->capture_driver->start(ctx->persistent_offline_pcap);
+        if (!ctx->capture_driver->start(ctx->persistent_offline_pcap)) {
+            rollbackPipelines();
+            ctx->capture_driver = nullptr;
+            return -2;
+        }
     } else {
         if (ctx->config.enable_ebpf) {
             ctx->capture_driver = &sentinel::capture::EBPFCapture::instance();
@@ -141,7 +160,11 @@ int sentinel_engine_start(SentinelEngineHandle handle) {
             ctx->capture_driver = &pcapDriver;
         }
         ctx->capture_driver->init(raw_queues);
-        ctx->capture_driver->start(ctx->persistent_iface);
+        if (!ctx->capture_driver->start(ctx->persistent_iface)) {
+            rollbackPipelines();
+            ctx->capture_driver = nullptr;
+            return -3;
+        }
     }
     return 0;
 }

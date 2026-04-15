@@ -52,6 +52,10 @@ typedef void (*OnStatsCallback)(const EngineStats* stats, void* user_data);
 
 SentinelEngineHandle sentinel_engine_create(const SentinelConfig* config);
 void sentinel_engine_set_callbacks(SentinelEngineHandle handle, OnAlertCallback alert_cb, OnStatsCallback stats_cb, void* user_data);
+// 返回 0 表示成功；负数表示失败：
+// -1: handle 无效
+// -2: 离线 pcap 驱动启动失败
+// -3: 在线抓包/eBPF 驱动启动失败
 int sentinel_engine_start(SentinelEngineHandle handle);
 void sentinel_engine_stop(SentinelEngineHandle handle);
 void sentinel_engine_destroy(SentinelEngineHandle handle);

@@ -82,15 +82,15 @@ std::vector<std::string> EBPFCapture::getDeviceList() {
     return devices;
 }
 
-void EBPFCapture::start(const std::string& device) {
+bool EBPFCapture::start(const std::string& device) {
     if (running.load() || targetQueues.empty())
-        return;
+        return running.load();
     m_device = device;
     m_ifindex = if_nametoindex(device.c_str());
 
     if (m_ifindex == 0) {
         std::cerr << "[XDP] 无法找到网络接口: " << device << std::endl;
-        return;
+        return false;
     }
 
     struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
@@ -120,31 +120,32 @@ void EBPFCapture::start(const std::string& device) {
 
     if (libbpf_get_error(m_ctx->bpf_obj)) {
         std::cerr << "[XDP] 加载 " << objPath << " 失败，请确保编译输出目录存在此文件。" << std::endl;
-        return;
+        m_ctx->bpf_obj = nullptr;
+        return false;
     }
 
     if (bpf_object__load(m_ctx->bpf_obj)) {
         std::cerr << "[XDP] bpf_object__load 失败 (请检查是否有 root 权限)。" << std::endl;
-        return;
+        return false;
     }
 
     struct bpf_program* prog = bpf_object__find_program_by_name(m_ctx->bpf_obj, "xdp_pass_or_drop");
     if (!prog) {
         std::cerr << "[XDP] 找不到 BPF 程序: xdp_pass_or_drop" << std::endl;
-        return;
+        return false;
     }
 
     m_ctx->link = bpf_program__attach_xdp(prog, m_ifindex);
     if (!m_ctx->link) {
         std::cerr << "[XDP] 挂载 BPF 程序到接口 " << device << " 失败。" << std::endl;
-        return;
+        return false;
     }
 
     m_ctx->xsks_map_fd = bpf_object__find_map_fd_by_name(m_ctx->bpf_obj, "xsks_map");
 
     if (posix_memalign(&m_ctx->umem_buffer, getpagesize(), NUM_FRAMES * FRAME_SIZE)) {
         std::cerr << "[XDP] 分配 UMEM 内存失败。" << std::endl;
-        return;
+        return false;
     }
 
     struct xsk_umem_config umem_cfg = {};
@@ -156,7 +157,7 @@ void EBPFCapture::start(const std::string& device) {
     if (xsk_umem__create(&m_ctx->umem, m_ctx->umem_buffer, NUM_FRAMES * FRAME_SIZE, &m_ctx->fq, &m_ctx->cq,
                          &umem_cfg)) {
         std::cerr << "[XDP] 创建 AF_XDP UMEM 失败。" << std::endl;
-        return;
+        return false;
     }
 
     struct xsk_socket_config xsk_cfg = {};
@@ -166,7 +167,7 @@ void EBPFCapture::start(const std::string& device) {
 
     if (xsk_socket__create(&m_ctx->xsk, m_device.c_str(), 0, m_ctx->umem, &m_ctx->rx, &m_ctx->tx, &xsk_cfg)) {
         std::cerr << "[XDP] 创建 XSK Socket 失败。" << std::endl;
-        return;
+        return false;
     }
 
     int xsk_fd = xsk_socket__fd(m_ctx->xsk);
@@ -185,6 +186,7 @@ void EBPFCapture::start(const std::string& device) {
 
     running.store(true, std::memory_order_release);
     captureThread = std::thread(&EBPFCapture::pollWorker, this);
+    return true;
 }
 
 void EBPFCapture::stop() {

@@ -16,7 +16,7 @@ public:
     }
 
     void init(const std::vector<sentinel::capture::PacketQueue*>& queues) override;
-    void start(const std::string& device) override;
+    bool start(const std::string& device) override;
     void stop() override;
 
     bool setFilter(const std::string& filterExp) override;

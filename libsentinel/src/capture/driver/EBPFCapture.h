@@ -23,7 +23,7 @@ public:
 
     // 实现 ICaptureDriver 接口
     void init(const std::vector<sentinel::common::SPSCQueue<RawPacket>*>& queues) override;
-    void start(const std::string& device) override;
+    bool start(const std::string& device) override;
     void stop() override;
     bool setFilter(const std::string& filterExp) override;
     std::vector<std::string> getDeviceList() override;
