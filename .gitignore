@@ -1,9 +1,11 @@
 # Build artifacts
 build/
 bin/
+cmake-build-*/
 *.o
 *.a
 *.so
+*.exe
 sentinel-cli
 
 # IDE
