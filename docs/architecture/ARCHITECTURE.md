@@ -56,6 +56,7 @@ graph TB
 - 通过 CGO 调用 `sentinel_engine_create` 初始化引擎上下文
 - 动态构建规则结构体，调用 `sentinel_engine_add_rule` 和 `sentinel_engine_reload_rules` 下发规则
 - 注册 Go 回调函数（`goAlertCallback`、`goStatsCallback`），接收来自 C++ 的告警与统计事件
+- 驱动终端仪表盘（`Dashboard`），提供实时统计、吞吐量显示和颜色编码告警（详见 [DASHBOARD.md](../engine/DASHBOARD.md)）
 - 监听系统信号，优雅停止引擎并释放资源
 
 **关键交互**：
@@ -63,8 +64,7 @@ graph TB
 ```go
 handle := C.sentinel_engine_create(&conf)
 C.sentinel_engine_set_callbacks(handle, alertCb, statsCb, nil)
-C.sentinel_engine_add_rule(handle, &cRule)
-C.sentinel_engine_reload_rules(handle)
+C.sentinel_engine_load_rules(handle, &rules[0], C.int(len(rules)))  // 原子批量下发
 C.sentinel_engine_start(handle)
 ```
 
@@ -83,12 +83,16 @@ C.sentinel_engine_start(handle)
 
 ```cpp
 struct EngineContext {
-    SentinelConfig config;
-    OnAlertCallback alert_cb;
-    OnStatsCallback stats_cb;
-    void* user_data;
-    ICaptureDriver* capture_driver;
-    std::vector<std::unique_ptr<PacketPipeline>> pipelines;
+    SentinelConfig config = {};
+    std::string persistent_iface;
+    std::string persistent_rules;
+    std::string persistent_offline_pcap;
+    OnAlertCallback alert_cb = nullptr;
+    OnStatsCallback stats_cb = nullptr;
+    void* user_data = nullptr;
+
+    sentinel::capture::ICaptureDriver* capture_driver = nullptr;
+    std::vector<std::unique_ptr<sentinel::engine::PacketPipeline>> pipelines;
     std::vector<std::unique_ptr<PacketQueue>> worker_queues;
 };
 ```
@@ -134,8 +138,8 @@ class ICaptureDriver {
 - 每个工作线程独占一个 `PacketPipeline` 实例和对应的输入队列。
 - 循环从队列取出 `RawPacket`，调用 `PacketParser::parse()` 进行协议解析。
 - 将解析后的 `ParsedPacket` 传递给 `IInspector`（即 `SecurityEngine`）进行威胁检测。
-- 批量收集解析后的报文，通过 `std::shared_ptr` 传递给消费端（如 UI 或日志模块），实现零拷贝数据共享。
-- 支持 CPU 亲和性绑定，减少线程迁移开销。
+- 支持 CPU 亲和性绑定（核心 0 留给捕获线程，工作线程从核心 1 开始逐个绑定），减少线程迁移开销。
+- 定期（150ms）刷新统计指标并更新规则快照，通过 Go 回调输出到控制台。
 
 **核心运行循环**：
 
@@ -143,11 +147,13 @@ class ICaptureDriver {
 while (running) {
     auto raw = inputQueue->popWait(100ms);
     auto parsed = PacketParser::parse(raw);
-    if (auto alert = inspector->inspect(parsed)) {
-        // 存储告警，触发回调
+    if (auto alert = inspector->inspectFast(parsed, stateSnapshot)) {
+        db.saveAlert(alert);
+        if (alert.level >= High) forensicWorker.enqueue(parsed);  // 高危取证
+        threatCallback(alert, parsed);
     }
-    batch.emplace_back(parsed);
-    if (batch full or timeout) flushBatch();
+    parsed.block.reset();  // 归还对象池
+    if (elapsed > 150ms) flushStats();  // 定期统计刷新
 }
 ```
 
@@ -163,7 +169,7 @@ while (running) {
 - 维护 IP 黑名单（支持动态增删）和告警抑制缓存，避免重复报警。
 - 检测到威胁后生成 `Alert` 结构，并调用 `DatabaseManager` 持久化，同时触发取证工作线程。
 
-**规则管理线程安全**：使用 `std::shared_mutex` 保护规则列表，读多写少场景下并发性能极佳。
+**规则管理线程安全**：采用 `atomic<shared_ptr<EngineState>>` 快照模式——写线程构建新快照后原子替换，读线程通过 `getSnapshot()` 获取不可变快照，实现无锁并发读取。
 
 ### 3.7 存储与取证
 

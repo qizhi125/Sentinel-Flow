@@ -67,7 +67,7 @@ sudo dnf install -y cmake gcc-c++ libpcap-devel sqlite-devel libbpf-devel
 cd Sentinel-Flow
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(nproc)
+cmake --build . -j$(nproc)
 ```
 
 编译成功后将生成静态库 `build/libsentinel/libsentinel_core.a`。
@@ -109,7 +109,7 @@ sentinel-cli -i eth0 -r ./rules -w 4 --ebpf
 ```
 .
 ├── cmd/sentinel/        # Go CLI 入口
-├── pkg/engine/          # CGO 绑定层
+├── pkg/engine/          # CGO 绑定层 + 终端仪表盘
 ├── libsentinel/         # C++ 核心引擎
 │   ├── include/         # 对外 C API 头文件
 │   └── src/             # 源码（捕获、解析、检测等）

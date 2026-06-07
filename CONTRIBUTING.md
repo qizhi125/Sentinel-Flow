@@ -25,7 +25,7 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 1. Fork the repository and create a feature branch from `develop`
 2. Ensure your code follows the project's C++20 style (Google C++ Style Guide)
 3. Add unit tests for new functionality
-4. Run `make sentinel_tests` and ensure all tests pass
+4. Run `cmake --build build --target sentinel_tests -j$(nproc) && cd build && ctest --output-on-failure` and ensure all tests pass
 5. Update documentation if your change affects user-facing behavior
 6. Submit a PR against the `develop` branch
 
@@ -38,7 +38,7 @@ sudo dnf install cmake gcc-c++ libpcap-devel sqlite-devel libbpf-devel clang
 # Build
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Debug ..
-make -j$(nproc)
+cmake --build . -j$(nproc)
 
 # Run tests
 ./tests/sentinel_tests
