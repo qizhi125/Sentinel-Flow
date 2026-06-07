@@ -114,7 +114,15 @@ sentinel-cli -i eth0 -r ./rules -w 4 --ebpf
 │   ├── include/         # 对外 C API 头文件
 │   └── src/             # 源码（捕获、解析、检测等）
 ├── cmake/               # CMake 模块
-├── docs/                # 设计文档
+├── docs/                # 设计文档（精简结构）
+│   ├── architecture.md  # 系统架构 + 路线图
+│   ├── setup.md         # 环境搭建与构建指南
+│   ├── operations.md    # 部署、权限、调优
+│   └── components/      # 子系统设计文档
+│       ├── capture.md   # 捕获驱动 + eBPF + 内存池
+│       ├── engine.md    # AC 自动机 + 流水线 + 规则 + 仪表盘
+│       └── storage.md   # SQLite + 取证
+├── configs/             # 配置文件
 ├── tests/               # 单元测试
 └── build/               # 构建产物
 ```

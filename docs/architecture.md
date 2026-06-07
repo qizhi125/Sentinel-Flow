@@ -44,6 +44,18 @@ graph TB
     Pipeline -->|统计回调| Binding
 ```
 
+### 数据流（捕获 → 告警）
+
+```
+NIC → [PcapCapture/EBPFCapture] → SPSC Queue → PacketPipeline (每核心)
+                                                        ↓
+                                            PacketParser (L3/L4)
+                                                        ↓
+                                          SecurityEngine (Aho-Corasick)
+                                                        ↓
+                                            C API 回调 → Go 告警输出
+```
+
 ## 3. 分层详解
 
 ### 3.1 控制面（Go 层）
@@ -56,7 +68,7 @@ graph TB
 - 通过 CGO 调用 `sentinel_engine_create` 初始化引擎上下文
 - 动态构建规则结构体，调用 `sentinel_engine_add_rule` 和 `sentinel_engine_reload_rules` 下发规则
 - 注册 Go 回调函数（`goAlertCallback`、`goStatsCallback`），接收来自 C++ 的告警与统计事件
-- 驱动终端仪表盘（`Dashboard`），提供实时统计、吞吐量显示和颜色编码告警（详见 [DASHBOARD.md](../engine/DASHBOARD.md)）
+- 驱动终端仪表盘（`Dashboard`），提供实时统计、吞吐量显示和颜色编码告警
 - 监听系统信号，优雅停止引擎并释放资源
 
 **关键交互**：
@@ -213,7 +225,15 @@ sequenceDiagram
     Go->>C: sentinel_engine_stop()
 ```
 
-## 5. 性能关键设计
+## 5. 线程模型
+
+- **捕获线程** — 从网卡读取，入队到 SPSC 环形缓冲区。
+- **工作线程** — 每核心一个 `PacketPipeline`（通过 pthread 亲和性固定），各自消费各自的 SPSC。
+- **取证线程** — 为高危告警提供异步 pcap 写入。
+- **数据库线程** — SQLite WAL 写入（通过 `DatabaseManager` 单写入者）。
+- 所有线程间通信均为**无锁**（SPSC 环形缓冲区、atomic shared_ptr 状态交换）。
+
+## 6. 性能关键设计
 
 - **无锁化**：捕获到检测全链路无互斥锁，仅使用原子操作和内存序保证可见性。
 - **零拷贝**：`RawPacket` 使用对象池分配，`ParsedPacket` 通过 `shared_ptr` 批量传递，避免重复拷贝。
@@ -221,15 +241,69 @@ sequenceDiagram
 - **批量处理**：工作线程以时间或数量为阈值批量提交结果，减少回调与 I/O 频率。
 - **eBPF 卸载**：XDP 程序可在网卡驱动层直接过滤或转发数据包，进一步降低 CPU 负载。
 
-## 6. 扩展点
+## 7. 扩展点
 
 - **新增捕获后端**：实现 `ICaptureDriver` 接口即可（如 DPDK、netmap）。
 - **新增检测算法**：实现 `IInspector` 接口，并注入到 `PacketPipeline` 中。
 - **新增回调类型**：在 `capi.h` 中扩展回调函数指针，并在 `capi_impl.cpp` 中调用。
 
-## 7. 待优化项
+## 8. 待优化项
 
 - 当前 eBPF 探针未纳入 CMake 构建，需手动编译 `xdp_prog.c`。
 - CLI 参数硬编码，需引入 `flag` 包增强灵活性。
 - 规则 ID 解析依赖字符串截取，应改为直接传递整型字段。
 
+---
+
+## 9. 项目演进路线图
+
+### 当前状态
+
+Sentinel-Flow 已完成从 Qt GUI 到 **Go CLI + C++ 核心库** 的架构转型。数据面基于无锁队列、对象池和 AC 自动机实现高性能流量检测，控制面由 Go 提供动态规则下发与实时监控。
+
+### 未来规划
+
+#### Phase 1: 协议深度解析 (DPI)
+
+- [ ] 从 L4 扩展至 L7 应用层协议识别与字段提取（HTTP、DNS、TLS、SMTP 等）。
+- [ ] 支持基于协议字段的精细化规则匹配（如 HTTP URI、User-Agent、DNS 查询域名）。
+- [ ] 实现协议解析器的插件化架构，便于动态加载自定义解析器。
+
+#### Phase 2: eBPF 捕获增强
+
+- [ ] 将 `xdp_prog.c` 的编译集成至 CMake 构建流程。
+- [ ] 实现 eBPF/XDP 程序的动态加载与卸载，无需重启进程即可切换捕获后端。
+- [ ] 支持通过 BPF map 动态更新内核态过滤规则（如 IP 黑名单），减少用户态拷贝。
+- [ ] 提供 eBPF 性能监控指标（丢包率、XDP 程序执行时间）。
+
+#### Phase 3: 规则热加载与智能管理
+
+- [x] 支持监听规则文件（YAML）变化，自动触发 AC 自动机重编译。
+- [x] 原子批量规则加载 API（`sentinel_engine_load_rules`），避免逐条下发竞态。
+- [ ] 增加规则优先级与预过滤机制，降低误报率。
+- [ ] 提供 Go 侧规则验证 API，防止无效规则导致引擎异常。
+
+#### Phase 4: 集群化与远程监控
+
+- [ ] 设计 gRPC API，支持远程下发规则、拉取统计信息与告警事件。
+- [ ] 实现多节点集中管理控制平面（Sentinel Controller）。
+- [ ] 支持将告警与流量元数据导出至 Kafka / Elasticsearch。
+
+#### Phase 5: 跨平台与可移植性
+
+- [ ] 抽象操作系统相关接口，初步支持 macOS（使用 `/dev/bpf`）和 Windows（使用 Npcap）。
+- [ ] 提供 Docker 镜像，简化部署与测试。
+
+### 已完成里程碑（v2.0 架构）
+
+- ✅ C++ 核心引擎编译为静态库，Go 通过 CGO 调用。
+- ✅ 动态规则添加与 AC 自动机热重载（返回所有匹配模式）。
+- ✅ 双捕获后端：libpcap 与 AF_XDP（基础实现，待实机验证）。
+- ✅ 多核流水线并行，CPU 亲和性绑定（核心 0 留给捕获，工作线程从核心 1 开始）。
+- ✅ 异步取证：高危告警触发原始报文 PCAP 落盘。
+- ✅ SQLite WAL 模式批量告警写入。
+- ✅ YAML 规则配置文件解析 + 文件监听热重载。
+- ✅ 终端实时统计与告警输出。
+- ✅ 原子批量规则加载 API（消除逐条下发竞态）。
+- ✅ 告警抑制缓存（2 秒窗口内同规则+同源 IP 去重）。
+- ✅ 无锁对象池（ObjectPool）+ SPSC 环形队列。
