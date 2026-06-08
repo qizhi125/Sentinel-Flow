@@ -1,50 +1,152 @@
-#include "PacketParser.h"
+#include "sentinel/engine/flow/PacketParser.h"
+
 #include <arpa/inet.h>
-#include <atomic>
-#include <chrono>
-#include <cstring>
-#include <iomanip>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
-#include <sstream>
 
-static void copyStr(char* dest, const char* src, size_t size) {
-    strncpy(dest, src, size - 1);
-    dest[size - 1] = '\0';
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <span>
+
+namespace sentinel::flow {
+
+// ---- 全局配置 ----
+ParserConfig PacketParser::config{};
+
+// ---- 内部辅助：从 span 安全构造 string_view ----
+static std::string_view span_to_sv(std::span<const uint8_t> s) {
+    if (s.empty())
+        return {};
+    return {reinterpret_cast<const char*>(s.data()), s.size()};
 }
 
-std::atomic<bool> PacketParser::ENABLE_TCP{true};
-std::atomic<bool> PacketParser::ENABLE_UDP{true};
-std::atomic<bool> PacketParser::ENABLE_HTTP{true};
-std::atomic<bool> PacketParser::ENABLE_TLS{true};
-std::atomic<bool> PacketParser::ENABLE_ICMP{true};
+// ---- L3: IPv4 ----
+std::optional<PacketParser::Ipv4Info>
+PacketParser::parse_ipv4(std::span<const uint8_t> data) {
+    if (data.size() < sizeof(struct iphdr))
+        return std::nullopt;
 
-static void parseL7(ParsedPacket& pkt) {
-    if (pkt.payloadSize < 4)
+    const auto* ip = reinterpret_cast<const struct iphdr*>(data.data());
+
+    if (ip->version != 4)
+        return std::nullopt;
+    if (ip->ihl < 5)
+        return std::nullopt;
+
+    uint32_t const header_len = static_cast<uint32_t>(ip->ihl) * 4;
+    uint32_t const total_len = ntohs(ip->tot_len);
+
+    if (header_len < sizeof(struct iphdr) || total_len < header_len)
+        return std::nullopt;
+    if (data.size() < header_len)
+        return std::nullopt;
+
+    return Ipv4Info{
+        .header_len = header_len,
+        .total_len = total_len,
+        .src_ip = ntohl(ip->saddr),
+        .dst_ip = ntohl(ip->daddr),
+        .ttl = ip->ttl,
+        .protocol = ip->protocol,
+    };
+}
+
+// ---- L4: TCP ----
+std::optional<PacketParser::TcpInfo>
+PacketParser::parse_tcp(std::span<const uint8_t> data) {
+    if (data.size() < sizeof(struct tcphdr))
+        return std::nullopt;
+
+    const auto* tcp = reinterpret_cast<const struct tcphdr*>(data.data());
+    uint32_t const header_len = static_cast<uint32_t>(tcp->th_off) * 4;
+
+    if (header_len < sizeof(struct tcphdr) || data.size() < header_len)
+        return std::nullopt;
+
+    // 构造 TCP 标志字符串
+    std::string flags;
+    if (tcp->syn)
+        flags += "SYN,";
+    if (tcp->ack)
+        flags += "ACK,";
+    if (tcp->fin)
+        flags += "FIN,";
+    if (tcp->rst)
+        flags += "RST,";
+    if (tcp->psh)
+        flags += "PSH,";
+    if (tcp->urg)
+        flags += "URG,";
+    if (!flags.empty())
+        flags.pop_back(); // 去除尾部逗号
+
+    // 载荷 span：跳过 TCP 头部
+    std::span<const uint8_t> payload;
+    if (data.size() > header_len) {
+        payload = data.subspan(header_len);
+    }
+
+    return TcpInfo{
+        .src_port = ntohs(tcp->th_sport),
+        .dst_port = ntohs(tcp->th_dport),
+        .header_len = header_len,
+        .flags = std::move(flags),
+        .payload = payload,
+    };
+}
+
+// ---- L4: UDP ----
+std::optional<PacketParser::UdpInfo>
+PacketParser::parse_udp(std::span<const uint8_t> data) {
+    if (data.size() < sizeof(struct udphdr))
+        return std::nullopt;
+
+    const auto* udp = reinterpret_cast<const struct udphdr*>(data.data());
+    uint16_t const datagram_len = ntohs(udp->uh_ulen);
+    uint32_t const payload_len = (datagram_len > sizeof(struct udphdr))
+        ? static_cast<uint32_t>(datagram_len - sizeof(struct udphdr))
+        : 0;
+
+    std::span<const uint8_t> payload;
+    if (data.size() > sizeof(struct udphdr)) {
+        size_t const actual = std::min<size_t>(payload_len, data.size() - sizeof(struct udphdr));
+        payload = data.subspan(sizeof(struct udphdr), actual);
+    }
+
+    return UdpInfo{
+        .src_port = ntohs(udp->uh_sport),
+        .dst_port = ntohs(udp->uh_dport),
+        .length = payload_len,
+        .payload = payload,
+    };
+}
+
+// ---- L7: 应用层识别 ----
+void PacketParser::parse_l7(types::ParsedPacket& pkt, std::span<const uint8_t> payload) {
+    if (payload.size() < 4)
         return;
-    const uint8_t* data = pkt.payloadData.data();
-    size_t len = pkt.payloadSize;
 
-    if (PacketParser::ENABLE_HTTP) {
-        std::string_view sv(reinterpret_cast<const char*>(data), len);
-        if (sv.starts_with("GET ") || sv.starts_with("POST ") || sv.starts_with("PUT ") || sv.starts_with("DELETE ") ||
+    // --- HTTP 检测 ---
+    if (config.enable_http.load(std::memory_order_relaxed)) {
+        std::string_view const sv = span_to_sv(payload);
+
+        if (sv.starts_with("GET ") || sv.starts_with("POST ") ||
+            sv.starts_with("PUT ") || sv.starts_with("DELETE ") ||
             sv.starts_with("HEAD ") || sv.starts_with("HTTP/")) {
 
-            copyStr(pkt.protocol, "HTTP", sizeof(pkt.protocol));
+            pkt.protocol = "HTTP";
 
             if (!sv.starts_with("HTTP/")) {
-                size_t space1 = sv.find(' ');
-                if (space1 != std::string_view::npos && space1 < std::numeric_limits<uint16_t>::max()) {
-                    pkt.httpMethodLen = static_cast<uint16_t>(space1);
-                    size_t space2 = sv.find(' ', space1 + 1);
+                // 提取 HTTP Method
+                size_t const space1 = sv.find(' ');
+                if (space1 != std::string_view::npos) {
+                    pkt.http_method = sv.substr(0, space1);
+                    // 提取 URI
+                    size_t const space2 = sv.find(' ', space1 + 1);
                     if (space2 != std::string_view::npos) {
-                        size_t uriLen = space2 - (space1 + 1);
-                        if (space1 + 1 < std::numeric_limits<uint16_t>::max() &&
-                            uriLen < std::numeric_limits<uint16_t>::max()) {
-                            pkt.httpUriOffset = static_cast<uint16_t>(space1 + 1);
-                            pkt.httpUriLen = static_cast<uint16_t>(uriLen);
-                        }
+                        pkt.http_uri = sv.substr(space1 + 1, space2 - space1 - 1);
                     }
                 }
             }
@@ -52,188 +154,172 @@ static void parseL7(ParsedPacket& pkt) {
         }
     }
 
-    if (PacketParser::ENABLE_TLS) {
-        if (data[0] == 0x16 && data[1] == 0x03 && len > 43 && data[5] == 0x01) {
-            copyStr(pkt.protocol, "TLS", sizeof(pkt.protocol));
+    // --- TLS ClientHello 检测 ---
+    if (config.enable_tls.load(std::memory_order_relaxed)) {
+        if (payload[0] == 0x16 && payload[1] == 0x03 && payload.size() > 43 && payload[5] == 0x01) {
 
+            pkt.protocol = "TLS";
+
+            // 遍历 TLS 扩展提取 SNI
             size_t pos = 43;
-            if (pos < len) {
-                pos += 1 + data[pos];
+            // 跳过 session_id
+            if (pos < payload.size()) {
+                pos += 1 + payload[pos];
             }
-            if (pos + 2 <= len) {
-                pos += 2 + ((data[pos] << 8) | data[pos + 1]);
+            // 跳过 cipher_suites
+            if (pos + 2 <= payload.size()) {
+                pos += 2 + (static_cast<size_t>(payload[pos]) << 8 | payload[pos + 1]);
             }
-            if (pos + 1 <= len) {
-                pos += 1 + data[pos];
+            // 跳过 compression_methods
+            if (pos + 1 <= payload.size()) {
+                pos += 1 + payload[pos];
             }
 
-            if (pos + 2 <= len) {
-                uint16_t extTotalLen = (data[pos] << 8) | data[pos + 1];
+            // 扩展区
+            if (pos + 2 <= payload.size()) {
+                uint16_t const ext_total_len = static_cast<uint16_t>(payload[pos]) << 8 | payload[pos + 1];
                 pos += 2;
-                size_t extEnd = std::min(pos + extTotalLen, len);
+                size_t const ext_end = std::min(pos + ext_total_len, payload.size());
 
-                while (pos + 4 <= extEnd) {
-                    uint16_t extType = (data[pos] << 8) | data[pos + 1];
-                    uint16_t extLen = (data[pos + 2] << 8) | data[pos + 3];
+                while (pos + 4 <= ext_end) {
+                    uint16_t const ext_type = static_cast<uint16_t>(payload[pos]) << 8 | payload[pos + 1];
+                    uint16_t const ext_len  = static_cast<uint16_t>(payload[pos + 2]) << 8 | payload[pos + 3];
                     pos += 4;
-                    if (pos + extLen > extEnd)
+                    if (pos + ext_len > ext_end)
                         break;
 
-                    if (extType == 0x0000) {
-                        size_t sniPos = pos;
-                        if (sniPos + 2 <= pos + extLen) {
-                            sniPos += 2;
-                            if (sniPos + 3 <= pos + extLen) {
-                                uint8_t nameType = data[sniPos];
-                                uint16_t nameLen = (data[sniPos + 1] << 8) | data[sniPos + 2];
-                                sniPos += 3;
-                                if (nameType == 0 && sniPos + nameLen <= pos + extLen) {
-                                    if (sniPos < std::numeric_limits<uint16_t>::max() &&
-                                        nameLen < std::numeric_limits<uint16_t>::max()) {
-                                        pkt.tlsSniOffset = static_cast<uint16_t>(sniPos);
-                                        pkt.tlsSniLen = static_cast<uint16_t>(nameLen);
-                                    }
+                    if (ext_type == 0x0000) { // SNI 扩展
+                        size_t sni_pos = pos;
+                        if (sni_pos + 2 <= pos + ext_len) {
+                            sni_pos += 2; // skip server_name_list length
+                            if (sni_pos + 3 <= pos + ext_len) {
+                                uint8_t  const name_type = payload[sni_pos];
+                                uint16_t const name_len  = static_cast<uint16_t>(payload[sni_pos + 1]) << 8 | payload[sni_pos + 2];
+                                sni_pos += 3;
+                                if (name_type == 0 && sni_pos + name_len <= pos + ext_len) {
+                                    pkt.tls_sni = span_to_sv(payload.subspan(sni_pos, name_len));
                                     break;
                                 }
                             }
                         }
                     }
-                    pos += extLen;
+                    pos += ext_len;
                 }
             }
             return;
         }
     }
 
-    if (pkt.srcPort == 80 || pkt.dstPort == 80) {
-        if (PacketParser::ENABLE_HTTP)
-            copyStr(pkt.protocol, "HTTP", sizeof(pkt.protocol));
-    } else if (pkt.srcPort == 443 || pkt.dstPort == 443) {
-        if (PacketParser::ENABLE_TLS)
-            copyStr(pkt.protocol, "TLS", sizeof(pkt.protocol));
+    // --- 端口启发式回退 ---
+    if (pkt.src_port == 80 || pkt.dst_port == 80) {
+        if (config.enable_http.load(std::memory_order_relaxed))
+            pkt.protocol = "HTTP";
+    } else if (pkt.src_port == 443 || pkt.dst_port == 443) {
+        if (config.enable_tls.load(std::memory_order_relaxed))
+            pkt.protocol = "TLS";
     }
 }
 
-std::optional<ParsedPacket> PacketParser::parse(const RawPacket& raw) {
-    if (!raw.block || raw.block->size < 14)
+// ---- 主解析入口 ----
+std::optional<types::ParsedPacket>
+PacketParser::parse(const types::RawPacket& raw) {
+    std::span<const uint8_t> const full = raw.payload();
+    if (full.size() < raw.link_layer_offset + sizeof(struct iphdr))
         return std::nullopt;
 
-    const uint8_t* data = raw.block->data;
-    uint32_t length = raw.block->size;
-    uint32_t offset = raw.linkLayerOffset;
+    types::ParsedPacket pkt;
 
-    if (length < offset + 20)
-        return std::nullopt;
+    // 报文 ID
+    static std::atomic<uint32_t> s_thread_counter{0};
+    thread_local uint32_t const t_thread_id = ++s_thread_counter;
+    thread_local uint32_t t_packet_count = 0;
+    pkt.id = (static_cast<uint64_t>(t_thread_id) << 32) | (++t_packet_count);
 
-    ParsedPacket pkt;
-    // 关键修复 3：使用原子变量消除多线程竞态
-    static std::atomic<uint64_t> globalId{0};
-    pkt.id = ++globalId;
-    pkt.timestamp = raw.kernelTimestampNs / 1000000;
+    pkt.timestamp_ms = raw.kernel_timestamp_ns / 1'000'000;
     pkt.block = raw.block;
-    pkt.totalLen = length;
-    pkt.linkLayerOffset = offset;
-    pkt.isTruncated = raw.isTruncated;
+    pkt.total_length = static_cast<uint32_t>(full.size());
+    pkt.link_layer_offset = raw.link_layer_offset;
+    pkt.truncated = raw.truncated;
 
-    if (offset >= 14) {
-        std::memcpy(pkt.dstMac.data(), data, 6);
-        std::memcpy(pkt.srcMac.data(), data + 6, 6);
+    // MAC 地址提取
+    if (raw.link_layer_offset >= 14 && full.size() >= 14) {
+        std::memcpy(pkt.dst_mac.data(), full.data(), 6);
+        std::memcpy(pkt.src_mac.data(), full.data() + 6, 6);
     }
 
-    const struct iphdr* ipHeader = (struct iphdr*)(data + offset);
-    if (ipHeader->version != 4)
-        return std::nullopt;
-    if (ipHeader->ihl < 5)
-        return std::nullopt;
-
-    uint32_t ipHeaderLen = ipHeader->ihl * 4;
-    if (offset > length || ipHeaderLen > (length - offset))
+    // L3: IPv4
+    std::span<const uint8_t> const ip_span = full.subspan(raw.link_layer_offset);
+    auto ip_info = parse_ipv4(ip_span);
+    if (!ip_info)
         return std::nullopt;
 
-    uint32_t ipTotalLen = ntohs(ipHeader->tot_len);
-    if (offset + ipTotalLen < length) {
-        length = offset + ipTotalLen;
+    pkt.src_ip = ip_info->src_ip;
+    pkt.dst_ip = ip_info->dst_ip;
+    pkt.ttl = ip_info->ttl;
+
+    // 约束有效载荷范围
+    size_t const effective_len = std::min<size_t>(
+        raw.link_layer_offset + ip_info->total_len, full.size());
+    std::span<const uint8_t> const l4_span = full.subspan(
+        raw.link_layer_offset + ip_info->header_len,
+        (effective_len > raw.link_layer_offset + ip_info->header_len)
+            ? effective_len - raw.link_layer_offset - ip_info->header_len
+            : 0);
+
+    // L4 分派
+    switch (ip_info->protocol) {
+    case IPPROTO_TCP: {
+        if (!config.enable_tcp.load(std::memory_order_relaxed))
+            return std::nullopt;
+
+        auto tcp_info = parse_tcp(l4_span);
+        if (!tcp_info)
+            return std::nullopt;
+
+        pkt.protocol = "TCP";
+        pkt.src_port = tcp_info->src_port;
+        pkt.dst_port = tcp_info->dst_port;
+        pkt.tcp_flags = std::move(tcp_info->flags);
+        pkt.payload_length = static_cast<uint32_t>(tcp_info->payload.size());
+
+        if (!tcp_info->payload.empty()) {
+            parse_l7(pkt, tcp_info->payload);
+        }
+        break;
     }
-
-    pkt.srcIp = ntohl(ipHeader->saddr);
-    pkt.dstIp = ntohl(ipHeader->daddr);
-    pkt.ttl = ipHeader->ttl;
-
-    uint32_t protocolOffset = offset + ipHeaderLen;
-    if (length < protocolOffset)
-        return std::nullopt;
-
-    if (ipHeader->protocol == IPPROTO_TCP) {
-        copyStr(pkt.protocol, "TCP", sizeof(pkt.protocol));
-        if (length < protocolOffset + 20)
+    case IPPROTO_UDP: {
+        if (!config.enable_udp.load(std::memory_order_relaxed))
             return std::nullopt;
 
-        const struct tcphdr* tcpHeader = (struct tcphdr*)(data + protocolOffset);
-        pkt.srcPort = ntohs(tcpHeader->source);
-        pkt.dstPort = ntohs(tcpHeader->dest);
-
-        std::string flags;
-        if (tcpHeader->syn)
-            flags += "SYN,";
-        if (tcpHeader->ack)
-            flags += "ACK,";
-        if (tcpHeader->fin)
-            flags += "FIN,";
-        if (tcpHeader->rst)
-            flags += "RST,";
-        if (tcpHeader->psh)
-            flags += "PSH,";
-        if (tcpHeader->urg)
-            flags += "URG,";
-        if (!flags.empty())
-            flags.pop_back();
-        pkt.tcpFlags = flags;
-
-        uint32_t tcpHeaderLen = tcpHeader->doff * 4;
-        size_t payloadOffset = protocolOffset + tcpHeaderLen;
-        pkt.length = (length > payloadOffset) ? (length - payloadOffset) : 0;
-
-        if (pkt.length > 0) {
-            pkt.payloadData.assign(data + payloadOffset, data + payloadOffset + pkt.length);
-            pkt.payloadSize = pkt.length;
-            parseL7(pkt);
-        }
-
-    } else if (ipHeader->protocol == IPPROTO_UDP) {
-        copyStr(pkt.protocol, "UDP", sizeof(pkt.protocol));
-        if (length < protocolOffset + 8)
+        auto udp_info = parse_udp(l4_span);
+        if (!udp_info)
             return std::nullopt;
 
-        const struct udphdr* udpHeader = (struct udphdr*)(data + protocolOffset);
-        pkt.srcPort = ntohs(udpHeader->source);
-        pkt.dstPort = ntohs(udpHeader->dest);
-        pkt.length = ntohs(udpHeader->len) - 8;
+        pkt.protocol = "UDP";
+        pkt.src_port = udp_info->src_port;
+        pkt.dst_port = udp_info->dst_port;
+        pkt.payload_length = udp_info->length;
 
-        size_t payloadOffset = protocolOffset + 8;
-        if (length > payloadOffset) {
-            uint32_t actualPayloadLen = std::min<uint32_t>(pkt.length, length - payloadOffset);
-            pkt.payloadData.assign(data + payloadOffset, data + payloadOffset + actualPayloadLen);
-            pkt.payloadSize = actualPayloadLen;
-            parseL7(pkt);
+        if (!udp_info->payload.empty()) {
+            parse_l7(pkt, udp_info->payload);
         }
+        break;
+    }
+    case IPPROTO_ICMP: {
+        if (!config.enable_icmp.load(std::memory_order_relaxed))
+            return std::nullopt;
 
-    } else if (ipHeader->protocol == IPPROTO_ICMP) {
-        copyStr(pkt.protocol, "ICMP", sizeof(pkt.protocol));
-        pkt.length = length - protocolOffset;
-        if (pkt.length > 0) {
-            pkt.payloadData.assign(data + protocolOffset, data + length);
-            pkt.payloadSize = pkt.length;
-        }
-    } else {
-        copyStr(pkt.protocol, "IPv4", sizeof(pkt.protocol));
-        pkt.length = length - protocolOffset;
+        pkt.protocol = "ICMP";
+        pkt.payload_length = static_cast<uint32_t>(l4_span.size());
+        break;
+    }
+    default:
+        pkt.protocol = "IPv4";
+        pkt.payload_length = static_cast<uint32_t>(l4_span.size());
+        break;
     }
 
     return pkt;
 }
 
-std::string PacketParser::ipToString(uint32_t ip) {
-    struct in_addr ip_addr;
-    ip_addr.s_addr = htonl(ip);
-    return std::string(inet_ntoa(ip_addr));
-}
+} // namespace sentinel::flow

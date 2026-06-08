@@ -1,68 +1,51 @@
 #ifndef SENTINEL_CAPI_H
 #define SENTINEL_CAPI_H
 
-#include <stdint.h>
-#include <stddef.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct SentinelConfig {
-    const char* interface_name;
-    uint32_t num_worker_threads;
-    uint32_t ring_buffer_size;
-    uint8_t enable_ebpf;
-    const char* rules_path;
-    const char* offline_pcap_path;
-    uint8_t verbose;
-} SentinelConfig;
+// 不透明引擎句柄
+typedef void* sentinel_engine_t;
 
-typedef void* SentinelEngineHandle;
+// ---- 引擎生命周期 ----
 
-typedef struct SentinelRule {
-    int32_t id;
-    uint8_t enabled;
-    const char* protocol;
-    const char* pattern;
-    int32_t level;
-    const char* description;
-} SentinelRule;
+// 创建引擎实例。成功返回非空句柄，失败返回 NULL。
+sentinel_engine_t sentinel_engine_create(void);
 
-typedef struct AlertEvent {
-    uint64_t timestamp_ns;
-    uint32_t src_ip;
-    uint32_t dst_ip;
-    uint16_t src_port;
-    uint16_t dst_port;
-    uint8_t  protocol;
-    int32_t  rule_id;
-    const char* payload_snippet;
-} AlertEvent;
+// 销毁引擎实例，释放所有资源。销毁后句柄失效。
+void sentinel_engine_destroy(sentinel_engine_t engine);
 
-typedef struct EngineStats {
-    uint64_t total_packets_received;
-    uint64_t total_packets_dropped;
-    uint64_t current_qps;
-    uint32_t active_flows;
-} EngineStats;
+// 启动引擎。device 为网卡名称（如 "eth0"、"lo"）或离线 pcap 路径。
+// 返回 0 表示成功，负数表示错误码。
+int sentinel_engine_start(sentinel_engine_t engine, const char* device);
 
-typedef void (*OnAlertCallback)(const AlertEvent* event, void* user_data);
-typedef void (*OnStatsCallback)(const EngineStats* stats, void* user_data);
+// 停止引擎。阻塞直到捕获和管线线程退出。幂等。
+void sentinel_engine_stop(sentinel_engine_t engine);
 
-SentinelEngineHandle sentinel_engine_create(const SentinelConfig* config);
-void sentinel_engine_set_callbacks(SentinelEngineHandle handle, OnAlertCallback alert_cb, OnStatsCallback stats_cb, void* user_data);
-// 返回 0 表示成功；负数表示失败：
-// -1: handle 无效
-// -2: 离线 pcap 驱动启动失败
-// -3: 在线抓包/eBPF 驱动启动失败
-int sentinel_engine_start(SentinelEngineHandle handle);
-void sentinel_engine_stop(SentinelEngineHandle handle);
-void sentinel_engine_destroy(SentinelEngineHandle handle);
+// ---- 规则管理 ----
 
-void sentinel_engine_clear_rules(SentinelEngineHandle handle);
-void sentinel_engine_add_rule(SentinelEngineHandle handle, const SentinelRule* rule);
-int sentinel_engine_reload_rules(SentinelEngineHandle handle);
+// 添加一条检测规则。pattern 为匹配模式串（ASCII），rule_id 为关联的规则 ID。
+// 返回 0 表示成功，负数表示错误码。
+int sentinel_engine_add_rule(sentinel_engine_t engine, const char* pattern, int rule_id);
+
+// 清空所有已添加的规则。
+void sentinel_engine_clear_rules(sentinel_engine_t engine);
+
+// 构建 AC 自动机。必须在所有 add_rule 之后、首次 start 之前调用。
+// 返回 0 表示成功，负数表示错误码。
+int sentinel_engine_build_matcher(sentinel_engine_t engine);
+
+// 获取已添加的规则数量。
+int sentinel_engine_rule_count(sentinel_engine_t engine);
+
+// 设置告警回调。当检测到威胁时，C++ 侧调用此函数指针。
+// user_data 为透传的上下文指针。
+typedef void (*sentinel_alert_callback_t)(int rule_id, const char* payload_snippet, void* user_data);
+
+void sentinel_engine_set_alert_callback(sentinel_engine_t engine,
+                                        sentinel_alert_callback_t callback,
+                                        void* user_data);
 
 #ifdef __cplusplus
 }

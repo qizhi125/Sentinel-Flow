@@ -1,132 +1,129 @@
 # Sentinel-Flow
 
-## 项目简介
+基于 **AF_XDP + SPSC 无锁队列 + Aho-Corasick 自动机** 的网络入侵检测系统（NIDS）。C++20 数据面通过 CGO 暴露 C API，Go 控制面提供 CLI 工具与终端仪表盘。
 
-Sentinel-Flow 是一款基于 **C++ 核心引擎 + Go 控制面** 的轻量级网络入侵检测系统（NIDS），专注于高性能流量捕获与实时威胁检测。项目采用 C++20 实现底层数据面，利用无锁队列、对象池、eBPF/AF_XDP 零拷贝技术保障万兆线速处理能力；控制面则由 Go 语言 CLI 工具驱动，通过 CGO 调用 C API 实现动态规则下发与实时状态监控。
+## 架构
 
-## 系统架构（Hyper-Exchange v2.0）
-
-```mermaid
-graph LR
-    subgraph Go 控制面
-        CLI[CLI 入口] -->|CGO 调用| CAPI[C API 接口]
-    end
-
-    subgraph C++ 数据面
-        CAPI -->|创建/启动| Engine[引擎上下文]
-        Engine --> Capture[捕获驱动]
-        Capture -->|原始包| SPSC[SPSC 无锁队列]
-        SPSC -->|多核分发| Pipeline1[PacketPipeline 1]
-        SPSC -->|多核分发| PipelineN[PacketPipeline N]
-        Pipeline1 & PipelineN -->|解析&检测| Security[SecurityEngine]
-        Security -->|AC 自动机| Alert[告警事件]
-        Security -->|高危触发| Forensic[异步取证落盘]
-    end
-
-    Alert -->|回调| GoCallback[Go 回调函数]
-    GoCallback -->|打印/推送| Terminal[终端输出]
+```
+捕获驱动 (libpcap / AF_XDP)
+  → ObjectPool<MemoryBlock> 预分配
+    → SPSCQueue<RawPacket> 五元组哈希分发
+      → PacketPipeline (per-CPU 线程, pthread 亲和性)
+        → PacketParser (L3/L4 + HTTP URI / TLS SNI)
+          → SecurityEngine (AhoCorasick, O(N) 多模式匹配)
+            → CGO 回调 → Go 告警输出
+              → DatabaseManager (SQLite WAL, 批量事务)
 ```
 
-- **捕获层**：支持 libpcap（通用）与 eBPF/AF_XDP（高性能零拷贝）双后端，从网卡获取原始数据包并打上纳秒时间戳。
-- **分发层**：基于五元组哈希将流量分发至多个 **SPSC 无锁环形队列**，每个队列绑定独立的 CPU 核心，消除缓存一致性开销。
-- **引擎层**：多线程 `PacketPipeline` 并行处理，集成 **Aho-Corasick 自动机** 实现 O(N) 多模式威胁检测，支持动态规则热加载。
-- **控制面**：Go 编译的 CLI 工具通过 CGO 绑定 C API，负责配置解析、规则下发、信号处理及回调事件输出。
-
-## 核心特性
-
-- **双模式捕获**：libpcap 通用抓包与 eBPF/XDP 零拷贝高性能捕获无缝切换。
-- **动态规则引擎**：Go 侧实时添加/删除规则，触发底层 AC 自动机重编译，无需重启引擎。
-- **无锁内存管理**：对象池（`ObjectPool`）与 SPSC 队列避免热路径上的内存分配与锁竞争。
-- **实时威胁检测**：基于 AC 自动机的多模式匹配，支持数千条规则的同时扫描。
-- **异步取证**：高危告警触发的 PCAP 存盘操作完全由后台线程处理，不阻塞检测管线。
-- **实时统计**：每秒刷新吞吐量、丢包数等指标，通过 Go 回调输出。
+详细架构规格：[`docs/architecture.md`](./docs/architecture.md)
+无锁内存模型：[`docs/lockfree_model.md`](./docs/lockfree_model.md)
+C/Go 边界规约：[`docs/cgo_boundary.md`](./docs/cgo_boundary.md)
+执行计划：[`ROADMAP.md`](./ROADMAP.md)
 
 ## 环境依赖
 
-- **操作系统**：Linux（推荐 Fedora 42/43、Ubuntu 24.04+）
-- **编译器**：GCC 14+ 或 Clang 18+（支持 C++20）
-- **构建工具**：CMake 3.20+
-- **依赖库**：
-  - libpcap-devel
-  - sqlite-devel
-  - libbpf-devel（可选，用于 eBPF 模式）
-  - xdp-tools / libxdp（可选）
+- **OS**: Linux（推荐 Fedora 42+、Ubuntu 24.04+）
+- **编译器**: GCC 14+ 或 Clang 18+（C++20）、Go 1.25+
+- **构建**: CMake 3.20+
+- **库**: libpcap-devel、sqlite-devel、libbpf-devel（eBPF 可选）、libxdp-devel（可选）
 
-## 构建与运行
-
-### 1. 安装依赖（Fedora）
+## 构建
 
 ```bash
-sudo dnf update -y
-sudo dnf install -y cmake gcc-c++ libpcap-devel sqlite-devel libbpf-devel
-```
+# C++ 静态库
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+# 产物: build/libsentinel/libsentinel_core.a
 
-### 2. 编译 C++ 核心库
-
-```bash
-cd Sentinel-Flow
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build . -j$(nproc)
-```
-
-编译成功后将生成静态库 `build/libsentinel/libsentinel_core.a`。
-
-### 3. 编译 Go CLI 工具
-
-```bash
-cd ..  # 回到项目根目录
+# Go CLI
 go build -o sentinel-cli ./cmd/sentinel
 ```
 
-### 4. 赋予网络权限并运行
+构建指南详情：[`docs/setup.md`](./docs/setup.md)
+
+## 运行
 
 ```bash
-# 授予抓包权限（无需 sudo）
-sudo setcap cap_net_raw,cap_net_admin+eip ./sentinel-cli
+# 授予网络权限
+sudo setcap cap_net_raw,cap_net_admin=eip ./sentinel-cli
 
-# 启动引擎（默认捕获 lo 接口）
-./sentinel-cli
+# 启动
+./sentinel-cli -i eth0 -r ./configs/rules.yaml -w 4
 ```
 
-若需使用 eBPF 模式，请确保已加载 XDP 程序并修改 `binding.go` 中的 `enable_ebpf` 字段。
+## CLI 参数
 
-## 命令行参数（计划支持）
+```
+sentinel-cli [flags]
 
-当前版本为演示版，接口硬编码为 `lo`。后续将支持以下参数：
+  -i        string   网络接口名称 (默认: lo)
+  -r        string   YAML 规则文件路径 (默认: ./configs/rules.yaml)
+  -w        int      工作线程数 1-64 (默认: 4)
+  --ebpf    bool     启用 AF_XDP 零拷贝捕获 (默认: false)
+  --offline string   离线 PCAP 文件路径 (默认: "" 即在线模式)
+  -v        bool     启用详细日志 (默认: false)
+  -h        bool     显示帮助
+```
+
+## 规则配置
+
+`configs/rules.yaml`:
+
+```yaml
+rules:
+  - id: 1001
+    enabled: true
+    protocol: "ANY"
+    pattern: "attack_pattern"
+    level: 4
+    description: "检测到攻击载荷"
+```
+
+Go 侧通过 `fsnotify` 监听文件变更，500ms 防抖后自动热重载 AC 自动机。
+
+## 测试
 
 ```bash
-sentinel-cli -i eth0 -r ./rules -w 4 --ebpf
-```
+# C++ 单元测试
+cmake --build build --target sentinel_tests -j$(nproc)
+cd build && ctest --output-on-failure
 
-- `-i`：指定监听的网络接口
-- `-r`：规则文件/目录路径
-- `-w`：工作线程数
-- `--ebpf`：启用 AF_XDP 零拷贝捕获
+# Go 测试
+go test ./pkg/engine/ -v
+```
 
 ## 目录结构
 
 ```
-.
-├── cmd/sentinel/        # Go CLI 入口
-├── pkg/engine/          # CGO 绑定层 + 终端仪表盘
-├── libsentinel/         # C++ 核心引擎
-│   ├── include/         # 对外 C API 头文件
-│   └── src/             # 源码（捕获、解析、检测等）
-├── cmake/               # CMake 模块
-├── docs/                # 设计文档（精简结构）
-│   ├── architecture.md  # 系统架构 + 路线图
-│   ├── setup.md         # 环境搭建与构建指南
-│   ├── operations.md    # 部署、权限、调优
-│   └── components/      # 子系统设计文档
-│       ├── capture.md   # 捕获驱动 + eBPF + 内存池
-│       ├── engine.md    # AC 自动机 + 流水线 + 规则 + 仪表盘
-│       └── storage.md   # SQLite + 取证
-├── configs/             # 配置文件
-├── tests/               # 单元测试
-└── build/               # 构建产物
+├── cmd/sentinel/              # Go CLI 入口
+├── pkg/engine/                # CGO 绑定层 + 终端仪表盘
+├── libsentinel/               # C++20 核心数据面
+│   ├── include/sentinel/      # 对外 C API 头文件 (capi.h)
+│   └── src/
+│       ├── capi_impl.cpp      # C API 实现 + EngineContext 生命周期
+│       ├── capture/
+│       │   ├── interface/     # ICaptureDriver 抽象接口
+│       │   ├── impl/          # PcapCapture (libpcap)
+│       │   └── driver/        # EBPFCapture (AF_XDP) + xdp_prog.c
+│       ├── common/
+│       │   ├── memory/        # ObjectPool (Tagged Pointer 无锁)
+│       │   ├── queues/        # SPSCQueue (无锁环形队列)
+│       │   ├── types/         # NetworkTypes, GlobalStats
+│       │   └── utils/         # Logger, StringUtils
+│       └── engine/
+│           ├── context/       # DatabaseManager (SQLite WAL)
+│           ├── flow/          # AhoCorasick, PacketParser, SecurityEngine
+│           ├── interface/     # IInspector
+│           ├── pipeline/      # PacketPipeline (per-CPU 线程)
+│           ├── governance/    # AuditLogger
+│           └── workers/       # ForensicWorker, WorkerBase
+├── docs/                      # 架构 + 边界规约 + 构建/运维指南
+├── ROADMAP.md                 # 三阶段执行计划
+├── configs/rules.yaml         # 示例规则配置
+├── tests/                     # C++ 单元测试 (GTest)
+└── third_party/googletest/
 ```
 
 ## 许可证
 
-本项目采用 MIT License 开源许可。
+MIT License

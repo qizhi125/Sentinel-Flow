@@ -1,115 +1,80 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/qizhi125/Sentinel-Flow/pkg/engine"
-	"gopkg.in/yaml.v3"
 )
-
-var (
-	iface   = flag.String("i", "lo", "网络接口名称 (e.g., eth0, lo)")
-	rules   = flag.String("r", "./configs/rules.yaml", "YAML规则配置文件路径")
-	workers = flag.Int("w", 4, "工作线程数量 (1-64)")
-	ebpf    = flag.Bool("ebpf", false, "启用 eBPF 捕获")
-	offline = flag.String("offline", "", "离线 PCAP 路径")
-	verbose = flag.Bool("v", false, "启用详细日志输出 (Verbose 模式)")
-	help    = flag.Bool("h", false, "显示帮助信息")
-)
-
-func logDebug(format string, a ...interface{}) {
-	if *verbose {
-		fmt.Printf(format, a...)
-	}
-}
-
-type RuleConfig struct {
-	Rules []engine.Rule `yaml:"rules"`
-}
-
-func loadRulesFromFile(filepath string) ([]engine.Rule, error) {
-	data, err := os.ReadFile(filepath)
-	if err != nil { return nil, err }
-	var config RuleConfig
-	if err := yaml.Unmarshal(data, &config); err != nil { return nil, err }
-	return config.Rules, nil
-}
-
-func watchRules(rulePath string, e *engine.Engine) {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil { return }
-	defer func() { _ = watcher.Close() }()
-	if err := watcher.Add(filepath.Dir(rulePath)); err != nil { return }
-
-	var mu sync.Mutex
-	var timer *time.Timer
-
-	for {
-		select {
-		case event, ok := <-watcher.Events:
-			if !ok { return }
-			if !strings.HasSuffix(event.Name, filepath.Base(rulePath)) { continue }
-
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Chmod) {
-				mu.Lock()
-				if timer != nil { timer.Stop() }
-				timer = time.AfterFunc(500*time.Millisecond, func() {
-					logDebug("\n🔄 监听到 [%s] 变更，正在热重载...\n", rulePath)
-					rulesList, err := loadRulesFromFile(rulePath)
-					if err != nil { return }
-					e.ClearRules()
-					for _, r := range rulesList { e.AddRule(r) }
-					e.ReloadRules()
-					logDebug("✅ 规则热重载完成！当前生效: %d 条\n", len(rulesList))
-				})
-				mu.Unlock()
-			}
-		case <-watcher.Errors:
-			return
-		}
-	}
-}
 
 func main() {
-	flag.Parse()
-	if *help {
-		fmt.Fprintf(os.Stderr, "Sentinel-Flow IDS v2.0\n")
-		flag.PrintDefaults()
-		os.Exit(0)
+	fmt.Println("Sentinel-Flow NIDS — Go Control Plane")
+
+	// 创建引擎
+	eng, err := engine.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "引擎创建失败: %v\n", err)
+		os.Exit(1)
 	}
+	defer eng.Close()
 
-	fmt.Printf("🛡️  Sentinel-Flow IDS v2.0\n")
-	e := engine.NewEngineWithConfig(*iface, *rules, *workers, *ebpf, *offline, *verbose)
-	defer e.Close()
-
-	rulesList, err := loadRulesFromFile(*rules)
-	if err == nil {
-		logDebug("📦 成功解析 %d 条规则，正在下发...\n", len(rulesList))
-		for _, r := range rulesList { e.AddRule(r) }
+	// 添加检测规则
+	fmt.Println("加载规则...")
+	rules := []struct {
+		pattern string
+		id      int
+	}{
+		{"malware_payload", 1001},
+		{"sql_injection", 1002},
+		{"reverse_shell", 1003},
 	}
-	e.ReloadRules()
+	for _, r := range rules {
+		if err := eng.AddRule(r.pattern, r.id); err != nil {
+			fmt.Fprintf(os.Stderr, "添加规则失败: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("已添加 %d 条规则\n", eng.RuleCount())
 
-	if err := e.Start(); err != nil {
-		fmt.Printf("❌ 启动错误: %v\n", err)
+	// 构建 AC 自动机
+	fmt.Println("构建检测引擎...")
+	if err := eng.BuildMatcher(); err != nil {
+		fmt.Fprintf(os.Stderr, "构建自动机失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	go watchRules(*rules, e)
-	logDebug("🛰️  引擎正在运行。按 Ctrl+C 停止...\n")
+	// 启动引擎
+	fmt.Println("启动引擎 (lo)...")
+	if err := eng.Start("lo"); err != nil {
+		fmt.Fprintf(os.Stderr, "引擎启动失败: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("引擎运行中, Ctrl+C 停止")
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	// 等待信号
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	logDebug("\n\n🛑 正在停止引擎...\n")
-	e.Stop()
+	// 定期状态输出
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+loop:
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println("\n收到停止信号")
+			break loop
+		case <-ticker.C:
+			fmt.Println("[INFO] 引擎运行正常")
+		}
+	}
+
+	// 停止引擎
+	fmt.Println("停止引擎...")
+	eng.Stop()
+	fmt.Println("引擎已停止")
 }

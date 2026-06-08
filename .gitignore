@@ -23,3 +23,5 @@ evidences/
 .DS_Store
 Thumbs.db
 third_party/
+.cache/
+.idea/editor.xml

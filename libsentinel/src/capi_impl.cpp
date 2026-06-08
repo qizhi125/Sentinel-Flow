@@ -1,185 +1,201 @@
-#include "capture/driver/EBPFCapture.h"
-#include "capture/impl/PcapCapture.h"
-#include "common/queues/SPSCQueue.h"
-#include "engine/flow/SecurityEngine.h"
-#include "engine/pipeline/PacketPipeline.h"
 #include "sentinel/capi.h"
+
+#include "sentinel/capture/PcapCapture.h"
+#include "sentinel/engine/Pipeline.h"
+#include "sentinel/engine/match/AhoCorasick.h"
+
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 
-using PacketQueue = sentinel::common::SPSCQueue<RawPacket>;
-
+// 内部上下文：封装 Pipeline + AC 自动机 + 捕获驱动 + 告警回调。
 struct EngineContext {
-    SentinelConfig config = {};
-    std::string persistent_iface;
-    std::string persistent_rules;
-    std::string persistent_offline_pcap;
-    OnAlertCallback alert_cb = nullptr;
-    OnStatsCallback stats_cb = nullptr;
-    void* user_data = nullptr;
+    std::shared_ptr<sentinel::engine::AhoCorasick> matcher;
+    std::shared_ptr<sentinel::capture::PcapCapture> capture;
+    sentinel::engine::Pipeline<65536> pipeline;
 
-    sentinel::capture::ICaptureDriver* capture_driver = nullptr;
-    std::vector<std::unique_ptr<sentinel::engine::PacketPipeline>> pipelines;
-    std::vector<std::unique_ptr<PacketQueue>> worker_queues;
+    sentinel_alert_callback_t alert_callback = nullptr;
+    void* alert_user_data = nullptr;
+
+    // 待构建的规则列表
+    std::vector<std::pair<std::string, int>> pending_rules;
 };
 
 extern "C" {
 
-SentinelEngineHandle sentinel_engine_create(const SentinelConfig* config) {
-    if (!config)
-        return nullptr;
-    auto* ctx = new EngineContext();
-    ctx->config = *config;
-    if (config->interface_name)
-        ctx->persistent_iface = config->interface_name;
-    if (config->rules_path)
-        ctx->persistent_rules = config->rules_path;
-    if (config->offline_pcap_path)
-        ctx->persistent_offline_pcap = config->offline_pcap_path;
+// ---- 引擎生命周期 ----
 
-    SecurityEngine::instance().clearRules();
-    return ctx;
-}
+sentinel_engine_t sentinel_engine_create(void) {
+    try {
+        auto* ctx = new EngineContext();
 
-void sentinel_engine_set_callbacks(SentinelEngineHandle handle, OnAlertCallback alert_cb, OnStatsCallback stats_cb,
-                                   void* user_data) {
-    auto* ctx = static_cast<EngineContext*>(handle);
-    if (ctx) {
-        ctx->alert_cb = alert_cb;
-        ctx->stats_cb = stats_cb;
-        ctx->user_data = user_data;
-    }
-}
+        ctx->matcher = std::make_shared<sentinel::engine::AhoCorasick>();
+        ctx->capture = std::make_shared<sentinel::capture::PcapCapture>();
 
-void sentinel_engine_clear_rules(SentinelEngineHandle handle) {
-    SecurityEngine::instance().clearRules();
-}
+        // 装配管线：捕获 → 解析 → 匹配 → 告警
+        ctx->pipeline.set_matcher(ctx->matcher);
+        ctx->pipeline.bind_capture(ctx->capture);
 
-void sentinel_engine_add_rule(SentinelEngineHandle handle, const SentinelRule* rule) {
-    if (!rule)
-        return;
-    IdsRule r;
-    r.id = rule->id;
-    r.enabled = (rule->enabled != 0);
-    r.protocol = rule->protocol ? rule->protocol : "ANY";
-    r.pattern = rule->pattern ? rule->pattern : "";
-    r.level = static_cast<Alert::Level>(rule->level);
-    r.description = rule->description ? rule->description : "";
-    SecurityEngine::instance().addRule(r);
-}
-
-int sentinel_engine_reload_rules(SentinelEngineHandle handle) {
-    SecurityEngine::instance().compileRules();
-    return 0;
-}
-
-int sentinel_engine_start(SentinelEngineHandle handle) {
-    auto* ctx = static_cast<EngineContext*>(handle);
-    if (!ctx)
-        return -1;
-
-    auto rollbackPipelines = [ctx]() {
-        for (auto& pipeline : ctx->pipelines) {
-            if (pipeline) {
-                pipeline->stopPipeline();
-            }
-        }
-        for (auto& pipeline : ctx->pipelines) {
-            if (pipeline) {
-                pipeline->wait();
-            }
-        }
-        ctx->pipelines.clear();
-        ctx->worker_queues.clear();
-    };
-
-    uint32_t threads = ctx->config.num_worker_threads > 0 ? ctx->config.num_worker_threads : 1;
-    ctx->worker_queues.reserve(threads);
-    ctx->pipelines.reserve(threads);
-    std::vector<PacketQueue*> raw_queues;
-
-    for (uint32_t i = 0; i < threads; ++i) {
-        ctx->worker_queues.push_back(std::make_unique<PacketQueue>(ctx->config.ring_buffer_size));
-        raw_queues.push_back(ctx->worker_queues.back().get());
-
-        auto pipeline = std::make_unique<sentinel::engine::PacketPipeline>();
-        pipeline->setInputQueue(raw_queues.back());
-        pipeline->setInspector(&SecurityEngine::instance());
-
-        pipeline->setCallBack(
-            nullptr,
-            [ctx](const Alert& a, const ParsedPacket& p) {
-                if (ctx->alert_cb) {
-                    AlertEvent ev{};
-                    ev.timestamp_ns = a.timestamp * 1000000ULL;
-                    ev.src_ip = a.sourceIp;
-                    ev.dst_ip = p.dstIp;
-                    try {
-                        if (a.ruleName.length() > 5) {
-                            ev.rule_id = std::stoi(a.ruleName.substr(5));
-                        }
-                    } catch (...) {
-                        ev.rule_id = 0;
-                    }
-                    ev.payload_snippet = a.description.c_str();
-                    ctx->alert_cb(&ev, ctx->user_data);
-                }
-            },
-            [ctx](uint64_t bytesAccumulator) {
-                if (ctx->stats_cb) {
-                    EngineStats stats{};
-                    stats.current_qps = bytesAccumulator;
-                    ctx->stats_cb(&stats, ctx->user_data);
+        ctx->pipeline.set_alert_callback(
+            [ctx](int32_t rule_id, sentinel::types::ParsedPacket const& parsed) {
+                if (ctx->alert_callback) {
+                    // 提取载荷快照作为 C 字符串（栈临时，回调内有效）
+                    std::string const snippet = parsed.protocol + " match rule " + std::to_string(rule_id);
+                    ctx->alert_callback(rule_id, snippet.c_str(), ctx->alert_user_data);
                 }
             });
 
-        pipeline->startPipeline();
-        ctx->pipelines.push_back(std::move(pipeline));
+        return static_cast<sentinel_engine_t>(ctx);
+    } catch (const std::exception& e) {
+        std::cerr << "[capi] 引擎创建失败: " << e.what() << std::endl;
+        return nullptr;
+    } catch (...) {
+        std::cerr << "[capi] 引擎创建失败: 未知异常" << std::endl;
+        return nullptr;
     }
+}
 
-    if (!ctx->persistent_offline_pcap.empty()) {
-        auto& pcapDriver = ::PcapCapture::instance();
-        pcapDriver.setOfflineMode(true);
-        pcapDriver.setVerbose(ctx->config.verbose != 0);
-        ctx->capture_driver = &pcapDriver;
-        ctx->capture_driver->init(raw_queues);
-        if (!ctx->capture_driver->start(ctx->persistent_offline_pcap)) {
-            rollbackPipelines();
-            ctx->capture_driver = nullptr;
+void sentinel_engine_destroy(sentinel_engine_t engine) {
+    if (!engine) {
+        return;
+    }
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+        delete ctx;
+    } catch (...) {
+        // 析构不应抛异常，防御性捕获
+    }
+}
+
+int sentinel_engine_start(sentinel_engine_t engine, const char* device) {
+    if (!engine || !device) {
+        return -1;
+    }
+    (void)engine; // 参数保留用于后续扩展（如多引擎管理）
+
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+
+        // 确保自动机已构建
+        if (!ctx->matcher->is_built()) {
+            std::cerr << "[capi] 启动失败: AC 自动机未构建" << std::endl;
             return -2;
         }
-    } else {
-        if (ctx->config.enable_ebpf) {
-            ctx->capture_driver = &sentinel::capture::EBPFCapture::instance();
-        } else {
-            auto& pcapDriver = ::PcapCapture::instance();
-            pcapDriver.setOfflineMode(false);
-            pcapDriver.setVerbose(ctx->config.verbose != 0);
-            ctx->capture_driver = &pcapDriver;
-        }
-        ctx->capture_driver->init(raw_queues);
-        if (!ctx->capture_driver->start(ctx->persistent_iface)) {
-            rollbackPipelines();
-            ctx->capture_driver = nullptr;
+
+        // 启动捕获驱动
+        std::string const device_str(device);
+        if (!ctx->capture->start(device_str)) {
+            std::cerr << "[capi] 启动失败: 无法打开设备 " << device << std::endl;
             return -3;
         }
-    }
-    return 0;
-}
 
-void sentinel_engine_stop(SentinelEngineHandle handle) {
-    auto* ctx = static_cast<EngineContext*>(handle);
-    if (ctx && ctx->capture_driver)
-        ctx->capture_driver->stop();
-}
+        // 启动管线
+        ctx->pipeline.start();
 
-void sentinel_engine_destroy(SentinelEngineHandle handle) {
-    auto* ctx = static_cast<EngineContext*>(handle);
-    if (ctx) {
-        sentinel_engine_stop(handle);
-        delete ctx;
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[capi] 启动异常: " << e.what() << std::endl;
+        return -4;
+    } catch (...) {
+        std::cerr << "[capi] 启动异常: 未知错误" << std::endl;
+        return -4;
     }
 }
+
+void sentinel_engine_stop(sentinel_engine_t engine) {
+    if (!engine) {
+        return;
+    }
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+        ctx->pipeline.stop();
+        ctx->capture->stop();
+    } catch (...) {
+        // 静默处理停止异常
+    }
 }
+
+// ---- 规则管理 ----
+
+int sentinel_engine_add_rule(sentinel_engine_t engine, const char* pattern, int rule_id) {
+    if (!engine || !pattern) {
+        return -1;
+    }
+    (void)engine; // 参数保留
+
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+        ctx->pending_rules.emplace_back(pattern, rule_id);
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[capi] 添加规则失败: " << e.what() << std::endl;
+        return -2;
+    } catch (...) {
+        return -2;
+    }
+}
+
+void sentinel_engine_clear_rules(sentinel_engine_t engine) {
+    if (!engine) {
+        return;
+    }
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+        ctx->pending_rules.clear();
+    } catch (...) {}
+}
+
+int sentinel_engine_build_matcher(sentinel_engine_t engine) {
+    if (!engine) {
+        return -1;
+    }
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+
+        // 创建一个新的自动机并在锁外构建（避免阻塞数据面）
+        auto new_matcher = std::make_shared<sentinel::engine::AhoCorasick>();
+        for (auto const& [pattern, rule_id] : ctx->pending_rules) {
+            new_matcher->insert(pattern, rule_id);
+        }
+        new_matcher->build();
+
+        // 原子替换 matcher（Pipeline 持有 shared_ptr，下次 pop 后生效）
+        ctx->matcher = std::move(new_matcher);
+        ctx->pipeline.set_matcher(ctx->matcher);
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[capi] 构建自动机失败: " << e.what() << std::endl;
+        return -2;
+    } catch (...) {
+        return -2;
+    }
+}
+
+int sentinel_engine_rule_count(sentinel_engine_t engine) {
+    if (!engine) {
+        return 0;
+    }
+    try {
+        auto* ctx = static_cast<EngineContext*>(engine);
+        return static_cast<int>(ctx->pending_rules.size());
+    } catch (...) {
+        return 0;
+    }
+}
+
+// ---- 告警回调 ----
+
+void sentinel_engine_set_alert_callback(sentinel_engine_t engine,
+                                        sentinel_alert_callback_t callback,
+                                        void* user_data) {
+    if (!engine) {
+        return;
+    }
+    auto* ctx = static_cast<EngineContext*>(engine);
+    ctx->alert_callback = callback;
+    ctx->alert_user_data = user_data;
+}
+
+} // extern "C"
