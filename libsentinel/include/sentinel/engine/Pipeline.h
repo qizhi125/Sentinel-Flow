@@ -17,6 +17,7 @@ namespace sentinel::engine {
 //
 // 持有 SPSC 队列、捕获驱动引用、AC 自动机和消费者线程。
 // 捕获回调 → push 队列 → consumer_loop: pop → parse → match → alert callback。
+// matcher_ 使用 atomic<shared_ptr> 实现无锁热交换。
 //
 // @tparam Capacity  SPSC 环形队列容量（必须是 2 的幂，默认 65536）。
 template <size_t Capacity = 65536>
@@ -35,7 +36,7 @@ public:
 
     // ---- 依赖注入 ----
 
-    // 设置 AC 自动机（共享所有权，支持外部热重载替换）。
+    // 设置 AC 自动机（store(release)，消费者线程通过 load(acquire) 可见）。
     void set_matcher(std::shared_ptr<AhoCorasick> matcher);
 
     // 设置告警回调。
@@ -62,7 +63,7 @@ private:
 
     SPSCQueue<types::RawPacket, Capacity> queue_;
     std::shared_ptr<capture::ICapture> capture_;
-    std::shared_ptr<AhoCorasick> matcher_;
+    std::atomic<std::shared_ptr<AhoCorasick>> matcher_{std::make_shared<AhoCorasick>()};
     AlertCallback alert_cb_;
 
     std::jthread consumer_thread_;

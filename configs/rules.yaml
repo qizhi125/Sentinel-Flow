@@ -1,0 +1,36 @@
+# Sentinel-Flow 检测规则配置
+rules:
+  - id: 1001
+    enabled: true
+    protocol: "ANY"
+    pattern: "malware_payload"
+    level: 4
+    description: "检测到恶意软件载荷特征"
+
+  - id: 1002
+    enabled: true
+    protocol: "HTTP"
+    pattern: "sql_injection"
+    level: 4
+    description: "检测到 SQL 注入尝试"
+
+  - id: 1003
+    enabled: true
+    protocol: "TCP"
+    pattern: "reverse_shell"
+    level: 4
+    description: "检测到反向 Shell 连接特征"
+    
+  - id: 1004
+    enabled: true
+    protocol: "ANY"
+    pattern: "xss_test_payload"
+    level: 3
+    description: "检测到跨站脚本攻击特征 (热重载测试)"
+
+  - id: 2001
+    enabled: false
+    protocol: "ANY"
+    pattern: "disabled_test_rule"
+    level: 2
+    description: "已禁用的测试规则"

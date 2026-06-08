@@ -1,4 +1,5 @@
 #include "sentinel/capture/PcapCapture.h"
+#include "sentinel/common/memory/ObjectPool.h"
 
 #include <pcap.h>
 
@@ -186,11 +187,11 @@ void PcapCapture::capture_loop() {
             continue; // 超时或错误
         }
 
-        // 构造 RawPacket — 当前实现需要拷贝数据。
-        // 后续可集成 ObjectPool 实现零拷贝。
+        // 从对象池获取 MemoryBlock（零 malloc，自动回收）
         uint32_t const caplen = std::min<uint32_t>(header->caplen, types::kMaxPacketSize);
 
-        auto block = std::make_shared<types::MemoryBlock>();
+        auto& pool = sentinel::common::GlobalPool<types::MemoryBlock>::instance();
+        auto block = pool.acquire();
         block->size = caplen;
         std::memcpy(block->data, pkt_data, caplen);
 

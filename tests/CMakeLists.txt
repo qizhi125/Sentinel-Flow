@@ -59,3 +59,13 @@ target_link_libraries(test_pipeline PRIVATE
     pthread
 )
 gtest_discover_tests(test_pipeline)
+
+# ---- ObjectPool 测试 ----
+add_executable(test_object_pool test_object_pool.cpp)
+target_link_libraries(test_object_pool PRIVATE
+    sentinel_core
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+gtest_discover_tests(test_object_pool)

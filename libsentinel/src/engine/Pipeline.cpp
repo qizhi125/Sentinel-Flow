@@ -20,7 +20,7 @@ Pipeline<Capacity>::~Pipeline() {
 
 template <size_t Capacity>
 void Pipeline<Capacity>::set_matcher(std::shared_ptr<AhoCorasick> matcher) {
-    matcher_ = std::move(matcher);
+    matcher_.store(std::move(matcher), std::memory_order_release);
 }
 
 template <size_t Capacity>
@@ -48,7 +48,8 @@ void Pipeline<Capacity>::start() {
         return;
     }
 
-    if (!matcher_ || !matcher_->is_built()) {
+    auto const matcher = matcher_.load(std::memory_order_acquire);
+    if (!matcher || !matcher->is_built()) {
         std::cerr << "[Pipeline] 启动失败: AC 自动机未构建" << std::endl;
         return;
     }
@@ -77,10 +78,6 @@ void Pipeline<Capacity>::stop() {
 
 template <size_t Capacity>
 void Pipeline<Capacity>::consumer_loop(std::stop_token stoken) {
-    // 本地快照，避免循环内原子读取
-    auto const matcher = matcher_;
-    auto const& alert_cb = alert_cb_;
-
     while (!stoken.stop_requested()) {
         auto raw_opt = queue_.pop();
         if (!raw_opt.has_value()) {
@@ -97,14 +94,17 @@ void Pipeline<Capacity>::consumer_loop(std::stop_token stoken) {
 
         auto& parsed = *parsed_opt;
 
+        // 原子获取最新 AC 自动机快照（release/acquire 配对保证热重载可见性）
+        auto const matcher = matcher_.load(std::memory_order_acquire);
+
         // AC 自动机多模式匹配
-        if (parsed.payload_length > 0 && matcher) {
+        if (matcher && matcher->is_built() && parsed.payload_length > 0) {
             std::vector<int32_t> matches;
             if (matcher->match(raw.payload(), matches)) {
                 // 命中规则 — 触发告警回调
-                if (alert_cb) {
+                if (alert_cb_) {
                     for (int32_t rule_id : matches) {
-                        alert_cb(rule_id, parsed);
+                        alert_cb_(rule_id, parsed);
                     }
                 }
             }
