@@ -1,4 +1,5 @@
 #include "sentinel/engine/Pipeline.h"
+#include "sentinel/engine/DatabaseManager.h"
 #include "sentinel/engine/flow/PacketParser.h"
 
 #include <chrono>
@@ -26,6 +27,11 @@ void Pipeline<Capacity>::set_matcher(std::shared_ptr<AhoCorasick> matcher) {
 template <size_t Capacity>
 void Pipeline<Capacity>::set_alert_callback(AlertCallback cb) {
     alert_cb_ = std::move(cb);
+}
+
+template <size_t Capacity>
+void Pipeline<Capacity>::set_db_manager(std::shared_ptr<DatabaseManager> db) {
+    db_manager_ = std::move(db);
 }
 
 template <size_t Capacity>
@@ -101,10 +107,24 @@ void Pipeline<Capacity>::consumer_loop(std::stop_token stoken) {
         if (matcher && matcher->is_built() && parsed.payload_length > 0) {
             std::vector<int32_t> matches;
             if (matcher->match(raw.payload(), matches)) {
-                // 命中规则 — 触发告警回调
-                if (alert_cb_) {
-                    for (int32_t rule_id : matches) {
+                // 命中规则 — 触发告警回调 + 异步持久化
+                for (int32_t rule_id : matches) {
+                    if (alert_cb_) {
                         alert_cb_(rule_id, parsed);
+                    }
+                    if (db_manager_) {
+                        // 仅提取应用层载荷（跳过链路层 + IP + TCP/UDP 头）
+                        size_t const total = raw.payload().size();
+                        size_t const app_offset = (total > parsed.payload_length)
+                            ? total - parsed.payload_length : 0;
+                        auto const app_span = raw.payload().subspan(app_offset,
+                            std::min(parsed.payload_length, uint32_t(256)));
+                        std::string const payload_snippet(
+                            reinterpret_cast<const char*>(app_span.data()),
+                            app_span.size());
+                        if (!payload_snippet.empty()) {
+                            db_manager_->save_alert(rule_id, payload_snippet);
+                        }
                     }
                 }
             }

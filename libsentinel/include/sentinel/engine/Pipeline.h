@@ -45,6 +45,9 @@ public:
     // 绑定捕获驱动：注册回调将 RawPacket 推入内部队列。
     void bind_capture(std::shared_ptr<capture::ICapture> cap);
 
+    // 设置数据库管理器（异步告警持久化）。
+    void set_db_manager(std::shared_ptr<class DatabaseManager> db);
+
     // ---- 生命周期 ----
 
     // 启动消费者线程。幂等。
@@ -65,6 +68,7 @@ private:
     std::shared_ptr<capture::ICapture> capture_;
     std::atomic<std::shared_ptr<AhoCorasick>> matcher_{std::make_shared<AhoCorasick>()};
     AlertCallback alert_cb_;
+    std::shared_ptr<class DatabaseManager> db_manager_;
 
     std::jthread consumer_thread_;
     std::atomic<bool> running_{false};

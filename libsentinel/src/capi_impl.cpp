@@ -1,6 +1,7 @@
 #include "sentinel/capi.h"
 
 #include "sentinel/capture/PcapCapture.h"
+#include "sentinel/engine/DatabaseManager.h"
 #include "sentinel/engine/Pipeline.h"
 #include "sentinel/engine/match/AhoCorasick.h"
 
@@ -9,10 +10,11 @@
 #include <string>
 #include <vector>
 
-// 内部上下文：封装 Pipeline + AC 自动机 + 捕获驱动 + 告警回调。
+// 内部上下文：封装 Pipeline + AC 自动机 + 捕获驱动 + 数据库 + 告警回调。
 struct EngineContext {
     std::shared_ptr<sentinel::engine::AhoCorasick> matcher;
     std::shared_ptr<sentinel::capture::PcapCapture> capture;
+    std::shared_ptr<sentinel::engine::DatabaseManager> database;
     sentinel::engine::Pipeline<65536> pipeline;
 
     sentinel_alert_callback_t alert_callback = nullptr;
@@ -32,9 +34,11 @@ sentinel_engine_t sentinel_engine_create(void) {
 
         ctx->matcher = std::make_shared<sentinel::engine::AhoCorasick>();
         ctx->capture = std::make_shared<sentinel::capture::PcapCapture>();
+        ctx->database = std::make_shared<sentinel::engine::DatabaseManager>();
 
-        // 装配管线：捕获 → 解析 → 匹配 → 告警
+        // 装配管线：捕获 → 解析 → 匹配 → 告警 + 持久化
         ctx->pipeline.set_matcher(ctx->matcher);
+        ctx->pipeline.set_db_manager(ctx->database);
         ctx->pipeline.bind_capture(ctx->capture);
 
         ctx->pipeline.set_alert_callback(

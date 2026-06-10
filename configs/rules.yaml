@@ -20,7 +20,7 @@ rules:
     pattern: "reverse_shell"
     level: 4
     description: "检测到反向 Shell 连接特征"
-    
+
   - id: 1004
     enabled: true
     protocol: "ANY"

@@ -2,7 +2,7 @@ package engine
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../libsentinel/include
-#cgo LDFLAGS: -L${SRCDIR}/../../cmake-build-debug/lib -lsentinel_core -lpcap -lstdc++
+#cgo LDFLAGS: -L${SRCDIR}/../../cmake-build-debug/lib -lsentinel_core -lpcap -lstdc++ -lsqlite3
 
 #include "sentinel/capi.h"
 #include <stdlib.h>

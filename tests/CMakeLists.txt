@@ -69,3 +69,13 @@ target_link_libraries(test_object_pool PRIVATE
     pthread
 )
 gtest_discover_tests(test_object_pool)
+
+# ---- DatabaseManager 测试 ----
+add_executable(test_database_manager test_database_manager.cpp)
+target_link_libraries(test_database_manager PRIVATE
+    sentinel_core
+    GTest::gtest
+    GTest::gtest_main
+    pthread
+)
+gtest_discover_tests(test_database_manager)
