@@ -41,12 +41,14 @@ struct RawPacket {
 struct ParsedPacket {
     uint64_t id = 0;
     int64_t timestamp_ms = 0;
+    int64_t timestamp_ns = 0;   // 原始内核纳秒时间戳（零精度损失）
 
     uint32_t src_ip = 0;
     uint32_t dst_ip = 0;
     uint16_t src_port = 0;
     uint16_t dst_port = 0;
-    std::string protocol; // "TCP" / "UDP" / "ICMP" / "HTTP" / "TLS" / "IPv4"
+    uint8_t  ip_protocol = 0;  // IANA IP 协议号（IPPROTO_TCP=6, IPPROTO_UDP=17, IPPROTO_ICMP=1）
+    std::string protocol;      // "TCP" / "UDP" / "ICMP" / "HTTP" / "TLS" / "IPv4"
 
     uint32_t payload_length = 0;
     uint32_t total_length = 0;

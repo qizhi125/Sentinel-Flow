@@ -1,9 +1,9 @@
 #include "sentinel/engine/Pipeline.h"
 #include "sentinel/engine/DatabaseManager.h"
 #include "sentinel/engine/flow/PacketParser.h"
+#include "sentinel/common/utils/Logger.h"
 
 #include <chrono>
-#include <iostream>
 
 namespace sentinel::engine {
 
@@ -38,7 +38,7 @@ template <size_t Capacity>
 void Pipeline<Capacity>::bind_capture(std::shared_ptr<capture::ICapture> cap) {
     capture_ = std::move(cap);
 
-    // 捕获回调：将 RawPacket 推入内部 SPSC 队列
+    // 将 RawPacket 推入 SPSC 队列（生产者侧回调）
     capture_->set_packet_callback([this](types::RawPacket&& raw) {
         if (!queue_.push(std::move(raw))) {
             // 队满丢弃 — 消费者处理能力不足
@@ -56,7 +56,7 @@ void Pipeline<Capacity>::start() {
 
     auto const matcher = matcher_.load(std::memory_order_acquire);
     if (!matcher || !matcher->is_built()) {
-        std::cerr << "[Pipeline] 启动失败: AC 自动机未构建" << std::endl;
+        SENTINEL_ERROR("启动失败: AC 自动机未构建");
         return;
     }
 
@@ -85,55 +85,63 @@ void Pipeline<Capacity>::stop() {
 template <size_t Capacity>
 void Pipeline<Capacity>::consumer_loop(std::stop_token stoken) {
     while (!stoken.stop_requested()) {
-        auto raw_opt = queue_.pop();
-        if (!raw_opt.has_value()) {
-            continue; // 空队列，忙轮询
-        }
+        try {
+            auto raw_opt = queue_.pop();
+            if (!raw_opt.has_value()) {
+                continue;
+            }
 
-        auto& raw = *raw_opt;
+            auto& raw = *raw_opt;
 
-        // L3/L4 协议解析
-        auto parsed_opt = flow::PacketParser::parse(raw);
-        if (!parsed_opt.has_value()) {
-            continue;
-        }
+            auto parsed_opt = flow::PacketParser::parse(raw);
+            if (!parsed_opt.has_value()) {
+                continue;
+            }
 
-        auto& parsed = *parsed_opt;
+            auto& parsed = *parsed_opt;
 
-        // 原子获取最新 AC 自动机快照（release/acquire 配对保证热重载可见性）
-        auto const matcher = matcher_.load(std::memory_order_acquire);
+            // 原子获取最新 AC 自动机快照（release/acquire 配对保证热重载可见性）
+            auto const matcher = matcher_.load(std::memory_order_acquire);
 
-        // AC 自动机多模式匹配
-        if (matcher && matcher->is_built() && parsed.payload_length > 0) {
-            std::vector<int32_t> matches;
-            if (matcher->match(raw.payload(), matches)) {
-                // 命中规则 — 触发告警回调 + 异步持久化
-                for (int32_t rule_id : matches) {
-                    if (alert_cb_) {
-                        alert_cb_(rule_id, parsed);
-                    }
-                    if (db_manager_) {
-                        // 仅提取应用层载荷（跳过链路层 + IP + TCP/UDP 头）
-                        size_t const total = raw.payload().size();
-                        size_t const app_offset = (total > parsed.payload_length)
-                            ? total - parsed.payload_length : 0;
-                        auto const app_span = raw.payload().subspan(app_offset,
-                            std::min(parsed.payload_length, uint32_t(256)));
-                        std::string const payload_snippet(
-                            reinterpret_cast<const char*>(app_span.data()),
-                            app_span.size());
-                        if (!payload_snippet.empty()) {
-                            db_manager_->save_alert(rule_id, payload_snippet);
+            if (matcher && matcher->is_built() && parsed.payload_length > 0) {
+                std::vector<int32_t> matches;
+                if (matcher->match(raw.payload(), matches)) {
+                    // 命中规则 — 触发告警回调 + 异步持久化
+                    for (int32_t rule_id : matches) {
+                        if (alert_cb_) {
+                            alert_cb_(rule_id, parsed);
+                        }
+                        if (db_manager_) {
+                            // 仅提取应用层载荷（跳过链路层 + IP + TCP/UDP 头）
+                            size_t const total = raw.payload().size();
+                            size_t const app_offset = (total > parsed.payload_length)
+                                ? total - parsed.payload_length : 0;
+                            auto const app_span = raw.payload().subspan(app_offset,
+                                std::min(parsed.payload_length, uint32_t(256)));
+                            std::string const payload_snippet(
+                                reinterpret_cast<const char*>(app_span.data()),
+                                app_span.size());
+                            if (!payload_snippet.empty()) {
+                                db_manager_->save_alert(rule_id, payload_snippet);
+                            }
                         }
                     }
                 }
             }
+        } catch (const std::exception& e) {
+            SENTINEL_ERROR("管线消费者线程异常: {}", e.what());
+            error_state_.store(true, std::memory_order_release);
+            break;
+        } catch (...) {
+            SENTINEL_ERROR("管线消费者线程异常: 未知错误");
+            error_state_.store(true, std::memory_order_release);
+            break;
         }
     }
 }
 
-// 显式实例化（默认容量 65536）
-template class Pipeline<65536>;
+// 显式实例化（默认容量 8192）
+template class Pipeline<8192>;
 
 template class Pipeline<1024>;
 template class Pipeline<4>;

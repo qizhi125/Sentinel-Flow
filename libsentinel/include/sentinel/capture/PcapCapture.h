@@ -41,6 +41,14 @@ public:
     void set_verbose(bool verbose) noexcept { verbose_ = verbose; }
     [[nodiscard]] bool is_running() const noexcept { return running_.load(std::memory_order_acquire); }
 
+    // ---- 遥测指标 ----
+    [[nodiscard]] uint64_t get_packets_received() const noexcept {
+        return packets_received_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t get_packets_dropped() const noexcept {
+        return packets_dropped_.load(std::memory_order_relaxed);
+    }
+
 private:
     void capture_loop();
     [[nodiscard]] int hash_packet(const uint8_t* data, size_t len, uint32_t offset) const noexcept;
@@ -61,6 +69,10 @@ private:
     // 模式
     bool offline_mode_{false};
     bool verbose_{false};
+
+    // 遥测计数器
+    std::atomic<uint64_t> packets_received_{0};
+    std::atomic<uint64_t> packets_dropped_{0};
 };
 
 } // namespace sentinel::capture

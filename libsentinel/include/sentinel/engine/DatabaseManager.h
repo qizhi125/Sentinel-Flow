@@ -49,6 +49,12 @@ public:
         return total_alerts_.load(std::memory_order_relaxed);
     }
 
+    // 前端缓冲区当前条目数（近似值，用于遥测）。
+    [[nodiscard]] size_t get_front_buffer_size() const {
+        std::lock_guard lock(buffer_mutex_);
+        return front_buffer_.size();
+    }
+
     // 停止后台线程并等待所有待写入告警落盘。
     void shutdown();
 
@@ -64,7 +70,7 @@ private:
     // 双缓冲：front_ 由 Pipeline 线程写入，back_ 由 DB 线程批量持久化。
     std::vector<Alert> front_buffer_;
     std::vector<Alert> back_buffer_;
-    std::mutex buffer_mutex_;
+    mutable std::mutex buffer_mutex_;
     std::condition_variable buffer_cv_;
 
     static constexpr size_t kMaxBufferSize = 10000;

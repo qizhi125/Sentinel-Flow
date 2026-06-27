@@ -4,7 +4,6 @@
 #include <array>
 #include <optional>
 #include <cstddef>
-#include <type_traits>
 
 namespace sentinel {
 
@@ -28,7 +27,23 @@ public:
     SPSCQueue& operator=(SPSCQueue&&) = delete;
 
     // 生产者：将元素推入队列。队满返回 false。
-    bool push(T item) {
+    //
+    // 提供 const& 和 && 两个重载，避免大尺寸/高对齐（如 alignas(64)）
+    // 结构体按值传递时的 GCC ABI 警告。
+    bool push(const T& item) {
+        size_t const h = head_.load(std::memory_order_relaxed);
+        size_t const t = tail_.load(std::memory_order_acquire);
+
+        if (((h + 1) & kMask) == t) {
+            return false;
+        }
+
+        buffer_[h] = item;
+        head_.store((h + 1) & kMask, std::memory_order_release);
+        return true;
+    }
+
+    bool push(T&& item) {
         size_t const h = head_.load(std::memory_order_relaxed);
         size_t const t = tail_.load(std::memory_order_acquire);
 

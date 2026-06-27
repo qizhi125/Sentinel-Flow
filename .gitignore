@@ -1,27 +1,50 @@
-# Build artifacts
+# 构建产物
 build/
-bin/
 cmake-build-*/
+bin/
 *.o
 *.a
 *.so
 *.exe
+
+# 编译后的二进制文件
+sentinel
 sentinel-cli
+src/main
+
+# 运行时数据
+/data/
+/logs/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# 取证数据
+evidences/
+data/evidences/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 
-# Runtime data
-evidences/
-*.db
-*.db-wal
-*.db-shm
-
 # OS
 .DS_Store
 Thumbs.db
+
+# 第三方依赖
 third_party/
+
+# Claude Code 辅助文件（禁止上传至 GitHub）
+**/CLAUDE.md
+.claude/
+
+# 缓存
 .cache/
-.idea/editor.xml
+
+# 暂存临时文件
+.pending_changes
+
+# 遥测日志
+sentinel-tui.log

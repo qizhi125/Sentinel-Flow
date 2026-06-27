@@ -79,3 +79,23 @@ target_link_libraries(test_database_manager PRIVATE
     pthread
 )
 gtest_discover_tests(test_database_manager)
+
+# ============================================================
+# 性能基准测试（google/benchmark）
+# ============================================================
+
+# ---- ObjectPool 基准测试 ----
+add_executable(bench_object_pool bench_object_pool.cpp)
+target_link_libraries(bench_object_pool PRIVATE
+    sentinel_core
+    benchmark::benchmark
+    pthread
+)
+
+# ---- SPSCQueue 基准测试 ----
+add_executable(bench_spsc_queue bench_spsc_queue.cpp)
+target_link_libraries(bench_spsc_queue PRIVATE
+    sentinel_core
+    benchmark::benchmark
+    pthread
+)

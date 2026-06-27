@@ -45,7 +45,7 @@ func NewWatcher(rulePath string, callback ReloadCallback) (*Watcher, error) {
 	}
 
 	return &Watcher{
-		filepath: rulePath, // 赋值给结构体内部的字段
+		filepath: rulePath,
 		callback: callback,
 		watcher:  fw,
 		done:     make(chan struct{}),

@@ -1,11 +1,11 @@
 #include "sentinel/capture/PcapCapture.h"
 #include "sentinel/common/memory/ObjectPool.h"
+#include "sentinel/common/utils/Logger.h"
 
 #include <pcap.h>
 
 #include <algorithm>
 #include <cstring>
-#include <iostream>
 #include <shared_mutex>
 
 namespace sentinel::capture {
@@ -65,7 +65,7 @@ bool PcapCapture::start(const std::string& device) {
     }
 
     if (!handle_) {
-        std::cerr << "[PcapCapture] 打开失败: " << errbuf << std::endl;
+        SENTINEL_ERROR("打开失败: {}", errbuf);
         return false;
     }
 
@@ -83,9 +83,7 @@ bool PcapCapture::start(const std::string& device) {
     }
 
     if (verbose_) {
-        std::cout << "[PcapCapture] "
-                  << (offline_mode_ ? "离线分析: " : "监听: ")
-                  << device_ << std::endl;
+        SENTINEL_INFO("{}", offline_mode_ ? "离线分析: " + device_ : "监听: " + device_);
     }
 
     running_.store(true, std::memory_order_release);
@@ -179,7 +177,7 @@ void PcapCapture::capture_loop() {
         if (res == -2) {
             // 离线文件 EOF
             if (verbose_) {
-                std::cout << "[PcapCapture] 离线 PCAP 读取完毕 (EOF)" << std::endl;
+                SENTINEL_INFO("离线 PCAP 读取完毕 (EOF)");
             }
             break;
         }
@@ -204,6 +202,7 @@ void PcapCapture::capture_loop() {
         if (packet_cb_) {
             packet_cb_(std::move(raw));
         }
+        packets_received_.fetch_add(1, std::memory_order_relaxed);
     }
 
     running_.store(false, std::memory_order_release);

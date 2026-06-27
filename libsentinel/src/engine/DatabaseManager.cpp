@@ -1,9 +1,9 @@
 #include "sentinel/engine/DatabaseManager.h"
+#include "sentinel/common/utils/Logger.h"
 
 #include <sqlite3.h>
 
 #include <cstdio>
-#include <iostream>
 #include <filesystem>
 
 namespace sentinel::engine {
@@ -11,14 +11,13 @@ namespace sentinel::engine {
 // ---- 构造 / 析构 ----
 
 DatabaseManager::DatabaseManager(const std::string& db_path) {
-    // 确保数据库文件所在目录存在
     std::filesystem::path const p(db_path);
     if (auto parent = p.parent_path(); !parent.empty() && !std::filesystem::exists(parent)) {
         std::filesystem::create_directories(parent);
     }
 
     if (sqlite3_open(db_path.c_str(), &db_) != SQLITE_OK) {
-        std::cerr << "[DatabaseManager] 打开数据库失败: " << sqlite3_errmsg(db_) << std::endl;
+        SENTINEL_ERROR("打开数据库失败: {}", sqlite3_errmsg(db_));
         return;
     }
 
@@ -29,15 +28,13 @@ DatabaseManager::DatabaseManager(const std::string& db_path) {
 
     create_tables();
 
-    // 预分配缓冲区
     front_buffer_.reserve(kMaxBufferSize);
     back_buffer_.reserve(kMaxBufferSize);
 
-    // 启动后台写入线程
     running_.store(true, std::memory_order_release);
     worker_thread_ = std::jthread(&DatabaseManager::worker_loop, this);
 
-    std::cout << "[DatabaseManager] 已初始化, WAL 模式, 路径: " << db_path << std::endl;
+    SENTINEL_INFO("已初始化, WAL 模式, 路径: {}", db_path);
 }
 
 DatabaseManager::~DatabaseManager() {
@@ -80,7 +77,6 @@ void DatabaseManager::save_alert(int32_t rule_id, std::string_view payload) {
 // ---- 同步冲刷 ----
 
 void DatabaseManager::flush() {
-    // 唤醒后台线程立即处理
     buffer_cv_.notify_one();
 
     // 等待双缓冲均清空（worker_loop 将 front_ → back_ → SQLite → clear）
@@ -139,7 +135,6 @@ void DatabaseManager::worker_loop(std::stop_token stoken) {
                 continue;
             }
 
-            // 交换缓冲区：front ↔ back
             back_buffer_.swap(front_buffer_);
         }
 
@@ -218,7 +213,7 @@ void DatabaseManager::execute_sql(const char* sql) {
     if (!db_) return;
     char* err_msg = nullptr;
     if (sqlite3_exec(db_, sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
-        std::cerr << "[DatabaseManager] SQL 错误: " << err_msg << std::endl;
+        SENTINEL_ERROR("SQL 错误: {}", err_msg);
         sqlite3_free(err_msg);
     }
 }

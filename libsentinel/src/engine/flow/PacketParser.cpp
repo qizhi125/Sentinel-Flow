@@ -12,17 +12,15 @@
 
 namespace sentinel::flow {
 
-// ---- 全局配置 ----
 ParserConfig PacketParser::config{};
 
-// ---- 内部辅助：从 span 安全构造 string_view ----
+// 内部辅助
 static std::string_view span_to_sv(std::span<const uint8_t> s) {
     if (s.empty())
         return {};
     return {reinterpret_cast<const char*>(s.data()), s.size()};
 }
 
-// ---- L3: IPv4 ----
 std::optional<PacketParser::Ipv4Info>
 PacketParser::parse_ipv4(std::span<const uint8_t> data) {
     if (data.size() < sizeof(struct iphdr))
@@ -53,7 +51,6 @@ PacketParser::parse_ipv4(std::span<const uint8_t> data) {
     };
 }
 
-// ---- L4: TCP ----
 std::optional<PacketParser::TcpInfo>
 PacketParser::parse_tcp(std::span<const uint8_t> data) {
     if (data.size() < sizeof(struct tcphdr))
@@ -80,9 +77,8 @@ PacketParser::parse_tcp(std::span<const uint8_t> data) {
     if (tcp->urg)
         flags += "URG,";
     if (!flags.empty())
-        flags.pop_back(); // 去除尾部逗号
+        flags.pop_back();
 
-    // 载荷 span：跳过 TCP 头部
     std::span<const uint8_t> payload;
     if (data.size() > header_len) {
         payload = data.subspan(header_len);
@@ -97,7 +93,6 @@ PacketParser::parse_tcp(std::span<const uint8_t> data) {
     };
 }
 
-// ---- L4: UDP ----
 std::optional<PacketParser::UdpInfo>
 PacketParser::parse_udp(std::span<const uint8_t> data) {
     if (data.size() < sizeof(struct udphdr))
@@ -128,7 +123,6 @@ void PacketParser::parse_l7(types::ParsedPacket& pkt, std::span<const uint8_t> p
     if (payload.size() < 4)
         return;
 
-    // --- HTTP 检测 ---
     if (config.enable_http.load(std::memory_order_relaxed)) {
         std::string_view const sv = span_to_sv(payload);
 
@@ -139,11 +133,9 @@ void PacketParser::parse_l7(types::ParsedPacket& pkt, std::span<const uint8_t> p
             pkt.protocol = "HTTP";
 
             if (!sv.starts_with("HTTP/")) {
-                // 提取 HTTP Method
                 size_t const space1 = sv.find(' ');
                 if (space1 != std::string_view::npos) {
                     pkt.http_method = sv.substr(0, space1);
-                    // 提取 URI
                     size_t const space2 = sv.find(' ', space1 + 1);
                     if (space2 != std::string_view::npos) {
                         pkt.http_uri = sv.substr(space1 + 1, space2 - space1 - 1);
@@ -154,28 +146,22 @@ void PacketParser::parse_l7(types::ParsedPacket& pkt, std::span<const uint8_t> p
         }
     }
 
-    // --- TLS ClientHello 检测 ---
     if (config.enable_tls.load(std::memory_order_relaxed)) {
         if (payload[0] == 0x16 && payload[1] == 0x03 && payload.size() > 43 && payload[5] == 0x01) {
 
             pkt.protocol = "TLS";
 
-            // 遍历 TLS 扩展提取 SNI
             size_t pos = 43;
-            // 跳过 session_id
             if (pos < payload.size()) {
                 pos += 1 + payload[pos];
             }
-            // 跳过 cipher_suites
             if (pos + 2 <= payload.size()) {
                 pos += 2 + (static_cast<size_t>(payload[pos]) << 8 | payload[pos + 1]);
             }
-            // 跳过 compression_methods
             if (pos + 1 <= payload.size()) {
                 pos += 1 + payload[pos];
             }
 
-            // 扩展区
             if (pos + 2 <= payload.size()) {
                 uint16_t const ext_total_len = static_cast<uint16_t>(payload[pos]) << 8 | payload[pos + 1];
                 pos += 2;
@@ -188,10 +174,10 @@ void PacketParser::parse_l7(types::ParsedPacket& pkt, std::span<const uint8_t> p
                     if (pos + ext_len > ext_end)
                         break;
 
-                    if (ext_type == 0x0000) { // SNI 扩展
+                    if (ext_type == 0x0000) {
                         size_t sni_pos = pos;
                         if (sni_pos + 2 <= pos + ext_len) {
-                            sni_pos += 2; // skip server_name_list length
+                            sni_pos += 2;
                             if (sni_pos + 3 <= pos + ext_len) {
                                 uint8_t  const name_type = payload[sni_pos];
                                 uint16_t const name_len  = static_cast<uint16_t>(payload[sni_pos + 1]) << 8 | payload[sni_pos + 2];
@@ -210,7 +196,6 @@ void PacketParser::parse_l7(types::ParsedPacket& pkt, std::span<const uint8_t> p
         }
     }
 
-    // --- 端口启发式回退 ---
     if (pkt.src_port == 80 || pkt.dst_port == 80) {
         if (config.enable_http.load(std::memory_order_relaxed))
             pkt.protocol = "HTTP";
@@ -229,19 +214,18 @@ PacketParser::parse(const types::RawPacket& raw) {
 
     types::ParsedPacket pkt;
 
-    // 报文 ID
     static std::atomic<uint32_t> s_thread_counter{0};
     thread_local uint32_t const t_thread_id = ++s_thread_counter;
     thread_local uint32_t t_packet_count = 0;
     pkt.id = (static_cast<uint64_t>(t_thread_id) << 32) | (++t_packet_count);
 
     pkt.timestamp_ms = raw.kernel_timestamp_ns / 1'000'000;
+    pkt.timestamp_ns = raw.kernel_timestamp_ns;
     pkt.block = raw.block;
     pkt.total_length = static_cast<uint32_t>(full.size());
     pkt.link_layer_offset = raw.link_layer_offset;
     pkt.truncated = raw.truncated;
 
-    // MAC 地址提取
     if (raw.link_layer_offset >= 14 && full.size() >= 14) {
         std::memcpy(pkt.dst_mac.data(), full.data(), 6);
         std::memcpy(pkt.src_mac.data(), full.data() + 6, 6);
@@ -256,6 +240,7 @@ PacketParser::parse(const types::RawPacket& raw) {
     pkt.src_ip = ip_info->src_ip;
     pkt.dst_ip = ip_info->dst_ip;
     pkt.ttl = ip_info->ttl;
+    pkt.ip_protocol = ip_info->protocol;
 
     // 约束有效载荷范围
     size_t const effective_len = std::min<size_t>(

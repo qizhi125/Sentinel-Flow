@@ -19,8 +19,8 @@ namespace sentinel::engine {
 // 捕获回调 → push 队列 → consumer_loop: pop → parse → match → alert callback。
 // matcher_ 使用 atomic<shared_ptr> 实现无锁热交换。
 //
-// @tparam Capacity  SPSC 环形队列容量（必须是 2 的幂，默认 65536）。
-template <size_t Capacity = 65536>
+// @tparam Capacity  SPSC 环形队列容量（必须是 2 的幂，默认 8192）。
+template <size_t Capacity = 8192>
 class Pipeline {
 public:
     // 告警回调签名：rule_id + 载荷快照。
@@ -61,6 +61,14 @@ public:
         return running_.load(std::memory_order_acquire);
     }
 
+    // SPSC 队列当前深度（近似值，用于遥测）。
+    [[nodiscard]] size_t queue_size() const noexcept { return queue_.size(); }
+
+    // 消费者线程是否已因异常退出。Go 侧通过 stats 回调轮询此标志。
+    [[nodiscard]] bool has_error() const noexcept {
+        return error_state_.load(std::memory_order_relaxed);
+    }
+
 private:
     void consumer_loop(std::stop_token stoken);
 
@@ -72,9 +80,10 @@ private:
 
     std::jthread consumer_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> error_state_{false}; // 消费者线程异常退出标志（stats 回调轮询）
 };
 
 // 显式实例化声明（实现在 .cpp 中）
-extern template class Pipeline<65536>;
+extern template class Pipeline<8192>;
 
 } // namespace sentinel::engine

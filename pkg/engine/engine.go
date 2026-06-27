@@ -4,7 +4,7 @@ package engine
 #include "sentinel/capi.h"
 #include <stdlib.h>
 
-extern void goAlertCallback(int rule_id, const char* payload_snippet, void* user_data);
+extern void goAlertCallback(const struct sentinel_alert_event_t* event, void* user_data);
 */
 import "C"
 import (
@@ -34,9 +34,7 @@ func New() (*Engine, error) {
 	eng := &Engine{handle: handle}
 
 	// 注册告警回调路由
-	registerAlertCallback(handle, func(ruleID int, snippet string) {
-		fmt.Printf("[ALERT] rule=%d %s\n", ruleID, snippet)
-	})
+	registerAlertCallback(handle, func(event AlertEvent) {})
 
 	// 设置 C 侧回调
 	C.sentinel_engine_set_alert_callback(
@@ -107,4 +105,26 @@ func (e *Engine) BuildMatcher() error {
 // RuleCount 返回待构建规则数量。
 func (e *Engine) RuleCount() int {
 	return int(C.sentinel_engine_rule_count(e.handle))
+}
+
+// AlertCallback 是告警回调签名。
+type AlertCallback = alertCallback
+
+// SetAlertCallback 替换当前引擎的告警回调。
+// 线程安全 — 可在引擎运行时调用。
+func (e *Engine) SetAlertCallback(cb AlertCallback) {
+	registerAlertCallback(e.handle, cb)
+}
+
+// SetStatsCallback 设置遥测统计回调。
+// 回调在 C++ 统计线程上下文执行（非主线程），调用方负责线程安全。
+func (e *Engine) SetStatsCallback(cb statsCallback) {
+	registerStatsCallback(e.handle, cb)
+
+	// 注册 C 侧回调（仅首次）
+	C.sentinel_engine_set_stats_callback(
+		e.handle,
+		(C.sentinel_stats_callback_t)(C.goStatsCallback),
+		unsafe.Pointer(e.handle),
+	)
 }

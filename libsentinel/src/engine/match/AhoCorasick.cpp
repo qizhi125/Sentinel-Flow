@@ -81,6 +81,8 @@ void AhoCorasick::build() {
 
 bool AhoCorasick::match(std::span<const uint8_t> payload,
                         std::vector<int32_t>& out) const {
+    if (!built_) return false;
+
     int32_t curr = kRoot;
 
     for (uint8_t const c : payload) {
@@ -98,6 +100,8 @@ bool AhoCorasick::match(std::span<const uint8_t> payload,
 // ---- 匹配（thread_local 便捷接口） ----
 
 const std::vector<int32_t>* AhoCorasick::match(std::span<const uint8_t> payload) const {
+    if (!built_) return nullptr;
+
     thread_local std::vector<int32_t> t_matches;
     t_matches.clear();
 

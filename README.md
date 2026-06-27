@@ -1,129 +1,47 @@
-# Sentinel-Flow
+<h1 align="center">Sentinel-Flow NIDS</h1>
 
-基于 **AF_XDP + SPSC 无锁队列 + Aho-Corasick 自动机** 的网络入侵检测系统（NIDS）。C++20 数据面通过 CGO 暴露 C API，Go 控制面提供 CLI 工具与终端仪表盘。
+<p align="center"><em>C++20 无锁管线 | Go Bubbletea TUI | SQLite WAL 持久化</em></p>
 
-## 架构
+<p align="center">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-blue?logo=c%2B%2B" alt="C++20"/>
+  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go" alt="Go 1.25"/>
+  <img src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite" alt="SQLite WAL"/>
+  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"/>
+</p>
 
-```
-捕获驱动 (libpcap / AF_XDP)
-  → ObjectPool<MemoryBlock> 预分配
-    → SPSCQueue<RawPacket> 五元组哈希分发
-      → PacketPipeline (per-CPU 线程, pthread 亲和性)
-        → PacketParser (L3/L4 + HTTP URI / TLS SNI)
-          → SecurityEngine (AhoCorasick, O(N) 多模式匹配)
-            → CGO 回调 → Go 告警输出
-              → DatabaseManager (SQLite WAL, 批量事务)
-```
+---
 
-详细架构规格：[`docs/architecture.md`](./docs/architecture.md)
-无锁内存模型：[`docs/lockfree_model.md`](./docs/lockfree_model.md)
-C/Go 边界规约：[`docs/cgo_boundary.md`](./docs/cgo_boundary.md)
-执行计划：[`ROADMAP.md`](./ROADMAP.md)
+面向 Linux 的网络入侵检测系统（NIDS）。C++20 数据面负责实时抓包与 Aho-Corasick 多模式匹配，Go 控制面通过 CGO 驱动引擎并渲染终端仪表盘，告警通过 SQLite WAL 异步批量落盘。
 
-## 环境依赖
-
-- **OS**: Linux（推荐 Fedora 42+、Ubuntu 24.04+）
-- **编译器**: GCC 14+ 或 Clang 18+（C++20）、Go 1.25+
-- **构建**: CMake 3.20+
-- **库**: libpcap-devel、sqlite-devel、libbpf-devel（eBPF 可选）、libxdp-devel（可选）
-
-## 构建
+## 快速开始
 
 ```bash
-# C++ 静态库
+# 构建 C++ 静态库
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-# 产物: build/libsentinel/libsentinel_core.a
+cmake --build build --target sentinel_core -j$(nproc)
 
-# Go CLI
+# 构建 Go CLI
+go mod tidy
 go build -o sentinel-cli ./cmd/sentinel
-```
 
-构建指南详情：[`docs/setup.md`](./docs/setup.md)
-
-## 运行
-
-```bash
-# 授予网络权限
+# 运行
 sudo setcap cap_net_raw,cap_net_admin=eip ./sentinel-cli
-
-# 启动
-./sentinel-cli -i eth0 -r ./configs/rules.yaml -w 4
+./sentinel-cli -i lo -c configs/rules.yaml
 ```
 
-## CLI 参数
+## 文档
 
-```
-sentinel-cli [flags]
+完整技术文档见 **[docs/system_overview.md](docs/system_overview.md)**，包括：
 
-  -i        string   网络接口名称 (默认: lo)
-  -r        string   YAML 规则文件路径 (默认: ./configs/rules.yaml)
-  -w        int      工作线程数 1-64 (默认: 4)
-  --ebpf    bool     启用 AF_XDP 零拷贝捕获 (默认: false)
-  --offline string   离线 PCAP 文件路径 (默认: "" 即在线模式)
-  -v        bool     启用详细日志 (默认: false)
-  -h        bool     显示帮助
-```
-
-## 规则配置
-
-`configs/rules.yaml`:
-
-```yaml
-rules:
-  - id: 1001
-    enabled: true
-    protocol: "ANY"
-    pattern: "attack_pattern"
-    level: 4
-    description: "检测到攻击载荷"
-```
-
-Go 侧通过 `fsnotify` 监听文件变更，500ms 防抖后自动热重载 AC 自动机。
-
-## 测试
-
-```bash
-# C++ 单元测试
-cmake --build build --target sentinel_tests -j$(nproc)
-cd build && ctest --output-on-failure
-
-# Go 测试
-go test ./pkg/engine/ -v
-```
-
-## 目录结构
-
-```
-├── cmd/sentinel/              # Go CLI 入口
-├── pkg/engine/                # CGO 绑定层 + 终端仪表盘
-├── libsentinel/               # C++20 核心数据面
-│   ├── include/sentinel/      # 对外 C API 头文件 (capi.h)
-│   └── src/
-│       ├── capi_impl.cpp      # C API 实现 + EngineContext 生命周期
-│       ├── capture/
-│       │   ├── interface/     # ICaptureDriver 抽象接口
-│       │   ├── impl/          # PcapCapture (libpcap)
-│       │   └── driver/        # EBPFCapture (AF_XDP) + xdp_prog.c
-│       ├── common/
-│       │   ├── memory/        # ObjectPool (Tagged Pointer 无锁)
-│       │   ├── queues/        # SPSCQueue (无锁环形队列)
-│       │   ├── types/         # NetworkTypes, GlobalStats
-│       │   └── utils/         # Logger, StringUtils
-│       └── engine/
-│           ├── context/       # DatabaseManager (SQLite WAL)
-│           ├── flow/          # AhoCorasick, PacketParser, SecurityEngine
-│           ├── interface/     # IInspector
-│           ├── pipeline/      # PacketPipeline (per-CPU 线程)
-│           ├── governance/    # AuditLogger
-│           └── workers/       # ForensicWorker, WorkerBase
-├── docs/                      # 架构 + 边界规约 + 构建/运维指南
-├── ROADMAP.md                 # 三阶段执行计划
-├── configs/rules.yaml         # 示例规则配置
-├── tests/                     # C++ 单元测试 (GTest)
-└── third_party/googletest/
-```
+| 文档 | 内容 |
+|------|------|
+| [`docs/system_overview.md`](docs/system_overview.md) | 系统概览 — 架构、快速开始、目录结构、终端约束 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构规格 — 数据面管线、线程模型、C API 清单 |
+| [`docs/cgo_boundary.md`](docs/cgo_boundary.md) | C/Go 边界规约 — API 接口、内存所有权、回调时序 |
+| [`docs/lockfree_model.md`](docs/lockfree_model.md) | 无锁内存模型 — SPSCQueue 内存序、ObjectPool ABA 推演 |
+| [`docs/build_and_operations.md`](docs/build_and_operations.md) | 构建与运维 — 依赖安装、性能调优、部署场景 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 贡献指南 — 分支策略、PR 流程、代码规范 |
 
 ## 许可证
 
-MIT License
+[MIT License](LICENSE)

@@ -18,7 +18,7 @@ namespace sentinel::common {
 // 线程安全：多生产者/多消费者。
 template <typename T>
 class ObjectPool {
-    static constexpr size_t kDefaultCapacity = 2048;
+    static constexpr size_t kDefaultCapacity = 8192;
 
     struct Slot {
         alignas(T) std::byte storage[sizeof(T)];
@@ -146,7 +146,7 @@ template <typename T>
 class GlobalPool {
 public:
     static ObjectPool<T>& instance() {
-        static ObjectPool<T> pool(2048);
+        static ObjectPool<T> pool(8192);
         return pool;
     }
 
