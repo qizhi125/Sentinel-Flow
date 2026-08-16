@@ -18,8 +18,15 @@ func NewHandler(rb *ringbuffer.Ring) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/ingest", ingest(rb))
 	mux.HandleFunc("GET /v1/events", events(rb))
+	mux.HandleFunc("GET /v1/health", health)
 	mux.Handle("GET /", http.FileServer(http.FS(web.Assets)))
 	return mux
+}
+
+// health 返回 200，供部署与 CI 探活。
+func health(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.WriteString(w, "ok\n")
 }
 
 func ingest(rb *ringbuffer.Ring) http.HandlerFunc {

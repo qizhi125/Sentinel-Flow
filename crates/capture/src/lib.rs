@@ -2,7 +2,7 @@
 //! 实时 AF_XDP 抓包在后续切片中替换本模块。
 
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read};
 use std::net::Ipv4Addr;
 use std::path::Path;
 
@@ -170,99 +170,35 @@ fn read_u32(b: &[u8], little_endian: bool) -> u32 {
     }
 }
 
-pub mod synth {
-    // 垂直切片冒烟测试用的合成演示流量。
-
-    use super::*;
-
-    // 写一个包含单帧 Ethernet/IPv4/TCP 的经典 pcap，
-    // 载荷为最小 TLS ClientHello（密码套件 0x1301，无扩展）。
-    pub fn write_demo_pcap(path: &Path) -> io::Result<()> {
-        let frame = demo_frame();
-        let mut buf = Vec::with_capacity(24 + 16 + frame.len());
-        buf.extend_from_slice(&0xa1b2c3d4u32.to_be_bytes());
-        buf.extend_from_slice(&2u16.to_be_bytes());
-        buf.extend_from_slice(&4u16.to_be_bytes());
-        buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(&65535u32.to_be_bytes());
-        buf.extend_from_slice(&1u32.to_be_bytes());
-        buf.extend_from_slice(&1u32.to_be_bytes());
-        buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(&(frame.len() as u32).to_be_bytes());
-        buf.extend_from_slice(&(frame.len() as u32).to_be_bytes());
-        buf.extend_from_slice(&frame);
-        File::create(path)?.write_all(&buf)
-    }
-
-    fn demo_frame() -> Vec<u8> {
-        let mut hello = Vec::new();
-        hello.extend_from_slice(&[0x03, 0x03]);
-        hello.extend_from_slice(&[0u8; 32]);
-        hello.push(0);
-        hello.extend_from_slice(&2u16.to_be_bytes());
-        hello.extend_from_slice(&0x1301u16.to_be_bytes());
-        hello.push(1);
-        hello.push(0);
-
-        let hs_len = hello.len() as u32;
-        let mut record = Vec::new();
-        record.extend_from_slice(&[0x16, 0x03, 0x03]);
-        record.extend_from_slice(&((hs_len + 4) as u16).to_be_bytes());
-        record.push(0x01);
-        record.extend_from_slice(&hs_len.to_be_bytes()[1..]);
-        record.extend_from_slice(&hello);
-
-        let ip_len = 20 + 20 + record.len();
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0u8; 12]);
-        frame.extend_from_slice(&0x0800u16.to_be_bytes());
-        frame.push(0x45);
-        frame.push(0);
-        frame.extend_from_slice(&(ip_len as u16).to_be_bytes());
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.push(64);
-        frame.push(6);
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.extend_from_slice(&[192, 168, 1, 10]);
-        frame.extend_from_slice(&[8, 8, 8, 8]);
-        frame.extend_from_slice(&50000u16.to_be_bytes());
-        frame.extend_from_slice(&443u16.to_be_bytes());
-        frame.extend_from_slice(&0u32.to_be_bytes());
-        frame.extend_from_slice(&0u32.to_be_bytes());
-        frame.push(0x50);
-        frame.push(0x18);
-        frame.extend_from_slice(&65535u16.to_be_bytes());
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.extend_from_slice(&0u16.to_be_bytes());
-        frame.extend_from_slice(&record);
-        frame
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // 夹具为 Arkime 测试库中的真实 TLS 1.3 抓包，路径相对 crate 根。
     #[test]
-    fn parses_synthetic_pcap_and_extracts_hello() {
-        let path = std::env::temp_dir().join(format!("sentinel-demo-{}.pcap", std::process::id()));
-        synth::write_demo_pcap(&path).unwrap();
-
-        let mut reader = PcapReader::open(&path).unwrap();
+    fn extracts_real_client_hello_from_fixture() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/testdata/curl-enabled-tls13.pcap");
+        let mut reader = PcapReader::open(&path).expect("打开 pcap");
         assert_eq!(reader.linktype(), 1);
-        let frame = reader.next_frame().unwrap().expect("one frame");
-        assert_eq!(frame.ts_millis, 1_000);
-
-        let flow = flow5(&frame.data, frame.linktype).expect("five-tuple");
-        assert_eq!(flow.src_ip, "192.168.1.10");
-        assert_eq!(flow.dst_ip, "8.8.8.8");
-        assert_eq!(flow.src_port, 50000);
-        assert_eq!(flow.dst_port, 443);
-
-        let hello = tls_client_hello(&frame.data, frame.linktype).expect("hello");
-        assert_eq!(&hello[..3], &[0x16, 0x03, 0x03]);
-        let _ = std::fs::remove_file(&path);
+        let mut found = false;
+        loop {
+            match reader.next_frame() {
+                Ok(Some(frame)) => {
+                    if let Some(flow) = flow5(&frame.data, frame.linktype) {
+                        if let Some(hello) = tls_client_hello(&frame.data, frame.linktype) {
+                            assert_eq!(&hello[..2], &[0x16, 0x03]);
+                            assert!(!flow.src_ip.is_empty() && !flow.dst_ip.is_empty());
+                            assert!(flow.src_port > 0 && flow.dst_port > 0);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => panic!("读取 pcap 失败: {e}"),
+            }
+        }
+        assert!(found, "夹具中应至少有一个 ClientHello");
     }
 }

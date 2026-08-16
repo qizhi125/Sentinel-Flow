@@ -2,6 +2,9 @@
 
 use sentinel_capture::Flow;
 use std::collections::HashSet;
+use std::fs;
+use std::io;
+use std::path::Path;
 
 // 一条结构化告警：五元组、时间、规则名、严重度与命中指纹。
 pub struct Alert {
@@ -15,82 +18,72 @@ pub struct Alert {
     pub fingerprint: String,
 }
 
+// 一条 JA3 规则：指纹、名称、严重度与情报来源。
+pub struct Ja3Rule {
+    pub fingerprint: String,
+    pub name: String,
+    pub severity: u8,
+    pub source: String,
+}
+
 pub trait Detector {
     fn name(&self) -> &'static str;
     fn on_tls(&mut self, ts_millis: i64, flow: &Flow, hello: &[u8]);
     fn drain(&mut self) -> Vec<Alert>;
 }
 
-struct Ja3Rule {
-    fingerprint: &'static str,
-    name: &'static str,
-    severity: u8,
-}
-
-// 注意：前四条为公开文档化的 JA3 样例；六条 "[占位]" 为 md5(名称) 的临时值，
-// 发布前必须替换为权威 JA3 情报源。演示条目用于切片冒烟测试。
-const BUILTIN_RULES: &[Ja3Rule] = &[
-    Ja3Rule {
-        fingerprint: "6734f37431670b3ab4292b8f60f29984",
-        name: "TrickBot",
-        severity: 8,
-    },
-    Ja3Rule {
-        fingerprint: "4d7a28d6f2263ed61de88ca66eb011e3",
-        name: "Emotet",
-        severity: 8,
-    },
-    Ja3Rule {
-        fingerprint: "51c64c77e60f3980eea90869b68c58a8",
-        name: "Dridex/QakBot（共享指纹）",
-        severity: 8,
-    },
-    Ja3Rule {
-        fingerprint: "a0e9f5d64349fb13191bc781f81f42e1",
-        name: "Meterpreter（共享指纹）",
-        severity: 8,
-    },
-    Ja3Rule {
-        fingerprint: "a436e38305c86d947f1b448d305dbb0e",
-        name: "Sliver [占位]",
-        severity: 7,
-    },
-    Ja3Rule {
-        fingerprint: "1f3b7b6b752a03f510a6b0c56d523c81",
-        name: "BumbleBee [占位]",
-        severity: 7,
-    },
-    Ja3Rule {
-        fingerprint: "2eac9ef0f759365d90fcd8005a16bfbc",
-        name: "Gozi [占位]",
-        severity: 7,
-    },
-    Ja3Rule {
-        fingerprint: "91370ecc5f968515a5b465858366f09a",
-        name: "AgentTesla [占位]",
-        severity: 7,
-    },
-    Ja3Rule {
-        fingerprint: "7280f59b457357f7a22d678dbfde64e0",
-        name: "RedLine [占位]",
-        severity: 7,
-    },
-    Ja3Rule {
-        fingerprint: "673f1e68ceeb02700a142b069e30085e",
-        name: "AsyncRAT [占位]",
-        severity: 7,
-    },
-    Ja3Rule {
-        fingerprint: "ea1e247991e541e39bf918cb7cfa5139",
-        name: "SyntheticDemo-Beacon",
-        severity: 6,
-    },
-];
-
-#[derive(Default)]
 pub struct Ja3Detector {
+    rules: Vec<Ja3Rule>,
     pending: Vec<Alert>,
     seen: HashSet<(String, String, u16)>,
+}
+
+impl Ja3Detector {
+    pub fn new(rules: Vec<Ja3Rule>) -> Self {
+        Self {
+            rules,
+            pending: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+}
+
+// 加载制表符分隔的规则文件：fingerprint<TAB>name<TAB>severity<TAB>source。
+// 空行与以 # 开头的行忽略；字段数或指纹格式错误时返回错误。
+pub fn load_rules(path: &Path) -> io::Result<Vec<Ja3Rule>> {
+    let text = fs::read_to_string(path)?;
+    let mut rules = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 4 {
+            return Err(io::Error::other(format!(
+                "规则文件第 {} 行字段数错误（应为 4 列）",
+                index + 1
+            )));
+        }
+        let fingerprint = fields[0].trim().to_string();
+        if fingerprint.len() != 32 || !fingerprint.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(io::Error::other(format!(
+                "规则文件第 {} 行指纹格式错误",
+                index + 1
+            )));
+        }
+        let severity = fields[2]
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| io::Error::other(format!("规则文件第 {} 行严重度格式错误", index + 1)))?;
+        rules.push(Ja3Rule {
+            fingerprint,
+            name: fields[1].trim().to_string(),
+            severity,
+            source: fields[3].trim().to_string(),
+        });
+    }
+    Ok(rules)
 }
 
 impl Detector for Ja3Detector {
@@ -106,7 +99,7 @@ impl Detector for Ja3Detector {
         if !self.seen.insert(key) {
             return;
         }
-        for rule in BUILTIN_RULES {
+        for rule in &self.rules {
             if rule.fingerprint == fingerprint {
                 self.pending.push(Alert {
                     timestamp: ts_millis,
@@ -131,36 +124,47 @@ impl Detector for Ja3Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sentinel_capture::{flow5, tls_client_hello, PcapReader};
+    use std::path::PathBuf;
+
+    fn data_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data")
+    }
 
     #[test]
-    fn matches_demo_fingerprint() {
-        let mut hello = Vec::new();
-        hello.extend_from_slice(&[0x03, 0x03]);
-        hello.extend_from_slice(&[0u8; 32]);
-        hello.push(0);
-        hello.extend_from_slice(&2u16.to_be_bytes());
-        hello.extend_from_slice(&0x1301u16.to_be_bytes());
-        hello.push(1);
-        hello.push(0);
+    fn loads_rules_from_data_file() {
+        let rules = load_rules(&data_dir().join("ja3_rules.tsv")).expect("加载规则");
+        assert!(!rules.is_empty());
+        for rule in &rules {
+            assert_eq!(rule.fingerprint.len(), 32);
+            assert!(!rule.name.is_empty());
+            assert!(!rule.source.is_empty());
+        }
+    }
 
-        let hs_len = hello.len() as u32;
-        let mut record = Vec::new();
-        record.extend_from_slice(&[0x16, 0x03, 0x03]);
-        record.extend_from_slice(&((hs_len + 4) as u16).to_be_bytes());
-        record.push(0x01);
-        record.extend_from_slice(&hs_len.to_be_bytes()[1..]);
-        record.extend_from_slice(&hello);
-
-        let flow = Flow {
-            src_ip: "192.168.1.10".into(),
-            dst_ip: "8.8.8.8".into(),
-            src_port: 50000,
-            dst_port: 443,
-        };
-        let mut detector = Ja3Detector::default();
-        detector.on_tls(1_000, &flow, &record);
-        let alerts = detector.drain();
-        assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].rule, "SyntheticDemo-Beacon");
+    // 夹具为 Arkime 测试库中的真实良性抓包，不应命中任何 C2 规则。
+    #[test]
+    fn benign_fixture_produces_no_alert() {
+        let fixture = data_dir().join("testdata/curl-enabled-tls13.pcap");
+        let rules = load_rules(&data_dir().join("ja3_rules.tsv")).expect("加载规则");
+        let mut detector = Ja3Detector::new(rules);
+        let mut reader = PcapReader::open(&fixture).expect("打开 pcap");
+        let mut found_hello = false;
+        loop {
+            match reader.next_frame() {
+                Ok(Some(frame)) => {
+                    if let Some(flow) = flow5(&frame.data, frame.linktype) {
+                        if let Some(hello) = tls_client_hello(&frame.data, frame.linktype) {
+                            detector.on_tls(frame.ts_millis, &flow, hello);
+                            found_hello = true;
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => panic!("读取 pcap 失败: {e}"),
+            }
+        }
+        assert!(found_hello, "夹具中应至少有一个 ClientHello");
+        assert!(detector.drain().is_empty(), "良性流量不应命中 C2 规则");
     }
 }

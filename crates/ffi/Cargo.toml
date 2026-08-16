@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+sentinel-capture = { path = "../capture" }

@@ -28,31 +28,33 @@ pub fn ja3_from_hello(hello: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sentinel_capture::{tls_client_hello, PcapReader};
+    use std::path::PathBuf;
 
-    fn minimal_hello_record() -> Vec<u8> {
-        let mut hello = Vec::new();
-        hello.extend_from_slice(&[0x03, 0x03]);
-        hello.extend_from_slice(&[0u8; 32]);
-        hello.push(0);
-        hello.extend_from_slice(&2u16.to_be_bytes());
-        hello.extend_from_slice(&0x1301u16.to_be_bytes());
-        hello.push(1);
-        hello.push(0);
-
-        let hs_len = hello.len() as u32;
-        let mut record = Vec::new();
-        record.extend_from_slice(&[0x16, 0x03, 0x03]);
-        record.extend_from_slice(&((hs_len + 4) as u16).to_be_bytes());
-        record.push(0x01);
-        record.extend_from_slice(&hs_len.to_be_bytes()[1..]);
-        record.extend_from_slice(&hello);
-        record
+    fn fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/testdata/curl-enabled-tls13.pcap")
     }
 
+    // 期望值由独立实现 stats/sim/ja3_verify.py 对同一真实抓包交叉验证得到：
+    // JA3 字段串 "771,4866-4867-4865-255,0-11-10-13172-16-22-23-49-13-43-45-51-21,29-23-30-25-24,0-1-2"。
     #[test]
-    fn ja3_matches_known_md5() {
-        let ja3 = ja3_from_hello(&minimal_hello_record()).expect("valid ClientHello");
-        assert_eq!(ja3, "ea1e247991e541e39bf918cb7cfa5139");
+    fn ja3_matches_independent_reference() {
+        let mut reader = PcapReader::open(&fixture_path()).expect("打开 pcap");
+        loop {
+            match reader.next_frame() {
+                Ok(Some(frame)) => {
+                    if let Some(hello) = tls_client_hello(&frame.data, frame.linktype) {
+                        let ja3 = ja3_from_hello(hello).expect("有效 ClientHello");
+                        assert_eq!(ja3, "eeadfd2f446a45ded96f804720a0c75b");
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => panic!("读取 pcap 失败: {e}"),
+            }
+        }
+        panic!("夹具中未找到 ClientHello");
     }
 
     #[test]

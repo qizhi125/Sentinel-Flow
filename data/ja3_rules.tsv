@@ -1,0 +1,6 @@
+# JA3 检测规则：制表符分隔 fingerprint	name	severity	source
+# 条目必须来自权威情报源并在来源列注明出处；禁止编造指纹或占位条目。
+6734f37431670b3ab4292b8f60f29984	TrickBot	8	https://github.com/salesforce/ja3 README（官方示例）
+4d7a28d6f2263ed61de88ca66eb011e3	Emotet	8	https://github.com/salesforce/ja3 README（官方示例）
+51c64c77e60f3980eea90869b68c58a8	QakBot/QBot（共享指纹）	8	https://www.netresec.com/?page=Blog（2022-09-29）
+a0e9f5d64349fb13191bc781f81f42e1	多家族共享指纹（REvil/Lumma 等）	6	https://thedfirreport.com/2021/03/29/sodinokibi-aka-revil-ransomware/

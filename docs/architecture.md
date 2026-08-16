@@ -8,7 +8,7 @@
 - 通过 JA3 指纹与经典规则检测已知恶意 TLS 通信；
 - 在 4 核 / 8 GB 机器上以约 50 Mbps 负载稳定运行。
 
-1.0 明确不做：Windows 支持、流量解密、数据面重 AI 推理、企业 SOC 能力。
+1.0 明确不做：Windows 支持、流量解密、数据面重型模型推理、企业 SOC 能力。
 
 ## 分层与模块
 
@@ -17,6 +17,7 @@
 | eBPF（规划中） | Rust（aya-ebpf） | `bpf/` | XDP 过滤与 XskMap 重定向 |
 | 数据面 | Rust | `crates/capture`、`crates/detect`、`crates/core` | 抓包、检测调度、进程生命周期 |
 | 算法库 | C++20 | `cpp/` | JA3 计算；后续 Aho-Corasick、PCRE2、Hyperscan |
+| 规则数据 | TSV | `data/` | JA3 指纹与情报来源，加载后进入检测器 |
 | FFI | Rust | `crates/ffi` | 编译 C++ 静态库并做安全封装 |
 | 告警传输 | Rust → Go | `crates/api` | HTTP+JSON 上报 `/v1/ingest` |
 | 控制面 | Go | `go/` | ingest、环形缓冲、SSE、嵌入式前端 |
@@ -39,6 +40,14 @@
 - Rust 拥有 socket、ring、线程与 eBPF 加载；unsafe 仅存在于 `crates/ffi`。
 - Go 只处理 HTTP，不直接调用 C++ 或 libpcap。
 - Rust 与 Go 之间只传告警/事件/统计（HTTP+JSON），不传每包数据。
+
+## 安全与性能边界
+
+- 控制面 `/v1/ingest` 与 `/v1/events` 默认仅绑定回环地址（已实现）；
+- 规划中：对外暴露要求配置鉴权或 mTLS；处理延迟超阈值或环形缓冲满载时触发
+  背压，数据面丢弃低优先级报文并记录速率限制审计日志；
+- 跨语言边界（FFI 与 HTTP+JSON）的性能成本需在 50 Mbps 目标负载下实测，
+  作为 0.2 eBPF 路径的对比基线。
 
 ## 未来 eBPF 数据面
 

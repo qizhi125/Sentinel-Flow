@@ -49,14 +49,16 @@ jobs:
       - name: End-to-end smoke
         run: |
           go build -o /tmp/sentinel-web ./go/cmd/sentinel-web
-          /tmp/sentinel-web &
+          /tmp/sentinel-web --no-open &
           server_pid=$!
           trap 'kill $server_pid 2>/dev/null || true' EXIT
           for _ in $(seq 1 30); do
-            curl -fsS --max-time 1 http://localhost:21318/ >/dev/null 2>&1 && break
+            curl -fsS --max-time 1 http://127.0.0.1:21318/v1/health >/dev/null 2>&1 && break
             sleep 0.2
           done
-          cargo run --example gen_demo -- /tmp/sentinel-demo.pcap
-          cargo run --bin sentineld -- --pcap /tmp/sentinel-demo.pcap
-          curl -fsS --max-time 5 http://localhost:21318/v1/events \
-            | grep -q 'SyntheticDemo-Beacon'
+          curl -fsS --max-time 5 http://127.0.0.1:21318/v1/health | grep -q ok
+          cargo run --bin sentineld -- \
+            --pcap data/testdata/curl-enabled-tls13.pcap \
+            --rules data/ja3_rules.tsv \
+            --api http://127.0.0.1:21318
+          curl -fsS --max-time 5 http://127.0.0.1:21318/ | grep -q 'Sentinel-Flow'

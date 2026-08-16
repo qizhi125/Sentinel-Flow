@@ -10,8 +10,9 @@ build:
 	$(CARGO) build --workspace
 	$(GO) build -o $(BIN_DIR)/sentinel-web ./go/cmd/sentinel-web
 
-web:
-	$(GO) run ./go/cmd/sentinel-web
+# 运行已构建的控制面（依赖 build，保证 bin/sentinel-web 存在）。
+web: build
+	./$(BIN_DIR)/sentinel-web
 
 daemon: build
 	$(CARGO) run --bin sentineld -- $(ARGS)
@@ -23,4 +24,3 @@ test:
 clean:
 	$(CARGO) clean
 	rm -rf $(BIN_DIR)
-

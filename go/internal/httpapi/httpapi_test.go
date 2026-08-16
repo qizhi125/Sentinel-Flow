@@ -17,7 +17,7 @@ func TestIngestThenStream(t *testing.T) {
 	server := httptest.NewServer(NewHandler(ring))
 	defer server.Close()
 
-	payload := `{"timestamp":1,"src_ip":"192.168.1.10","dst_ip":"8.8.8.8","src_port":50000,"dst_port":443,"rule":"SyntheticDemo-Beacon","severity":6,"fingerprint":"ea1e247991e541e39bf918cb7cfa5139"}`
+	payload := `{"timestamp":1,"src_ip":"192.0.2.1","dst_ip":"198.51.100.1","src_port":40000,"dst_port":443,"rule":"test-rule","severity":6,"fingerprint":"00000000000000000000000000000000"}`
 	resp, err := http.Post(server.URL+"/v1/ingest", "application/json", strings.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
@@ -52,9 +52,24 @@ func TestIngestThenStream(t *testing.T) {
 		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data: "))), &alert); err != nil {
 			t.Fatal(err)
 		}
-		if alert.Rule != "SyntheticDemo-Beacon" {
+		if alert.Rule != "test-rule" {
 			t.Fatalf("streamed rule = %q", alert.Rule)
 		}
 		return
+	}
+}
+
+func TestHealth(t *testing.T) {
+	ring := ringbuffer.New(10)
+	server := httptest.NewServer(NewHandler(ring))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }

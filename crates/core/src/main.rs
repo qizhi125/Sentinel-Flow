@@ -2,17 +2,20 @@
 
 use sentinel_api::Client;
 use sentinel_capture::{flow5, tls_client_hello, PcapReader};
-use sentinel_detect::{Detector, Ja3Detector};
+use sentinel_detect::{load_rules, Detector, Ja3Detector};
 use std::{env, path::PathBuf, process::ExitCode};
 
 fn usage() -> ExitCode {
-    eprintln!("用法: sentineld --pcap <file.pcap> [--api http://localhost:21318]");
+    eprintln!(
+        "用法: sentineld --pcap <file.pcap> [--rules data/ja3_rules.tsv] [--api http://localhost:21318]"
+    );
     ExitCode::FAILURE
 }
 
 fn main() -> ExitCode {
     let mut pcap: Option<PathBuf> = None;
     let mut api = String::from("http://localhost:21318");
+    let mut rules_path = PathBuf::from("data/ja3_rules.tsv");
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -22,6 +25,10 @@ fn main() -> ExitCode {
             },
             "--api" => match args.next() {
                 Some(value) => api = value,
+                None => return usage(),
+            },
+            "--rules" => match args.next() {
+                Some(value) => rules_path = PathBuf::from(value),
                 None => return usage(),
             },
             _ => return usage(),
@@ -38,7 +45,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut detector = Ja3Detector::default();
+    let rules = match load_rules(&rules_path) {
+        Ok(rules) => rules,
+        Err(e) => {
+            eprintln!("加载规则 {} 失败: {e}", rules_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut detector = Ja3Detector::new(rules);
     let client = Client::new(api);
     let mut frames = 0u64;
 

@@ -10,3 +10,11 @@
 
 # docs 下的本地临时目录（不提交 git）
 /docs/tmp/
+
+# AI/Codex 本地规则与配置（不提交 git）
+/AGENT.md
+/.agents/
+/.codex/
+
+# 本地统计与模拟脚本目录（不提交 git）
+/stats/
