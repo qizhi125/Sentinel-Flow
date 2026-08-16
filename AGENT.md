@@ -87,8 +87,31 @@ offline pcap → TLS ClientHello → JA3 → alert → SSE timeline.
 
 ### Versioning
 
-- Base is 0.1.1. Patch per iteration, minor for a major feature, major only
+- Base is 0.1.0. Patch per iteration, minor for a major feature, major only
   after the first 1.0 release.
+
+### Data and configuration integrity (mandatory)
+
+- No simulated or mock data anywhere: test fixtures, detection rules,
+  benchmarks, and documentation must be built from real captured traffic and
+  authoritative intelligence. If a slice temporarily carries a demo fixture,
+  it must be flagged in code and removed before the stage closes.
+- No hardcoding of operational values: ports, addresses, paths, secrets, and
+  rule tables must come from configuration files or authoritative data
+  sources. Compile-time constants are allowed only for immutable algorithm
+  parameters (for example MD5 constants), never for runtime configuration.
+
+### Process and port discipline (mandatory)
+
+- Prefer the default recommended port. Never kill an unrelated process to
+  free a port.
+- If the default port is in use, identify the holder. If it is an abandoned
+  leftover instance of this tool, terminate it (SIGTERM first, SIGKILL only
+  after a grace period) and reuse the port.
+- If the holder is another live process, bind the next available port instead
+  and write the chosen port somewhere the data plane can discover it.
+- Note: an OS-level zombie process cannot hold a listening socket. "Leftover
+  instance" means an abandoned live process from a previous run of this tool.
 
 ### Comment policy (mandatory)
 

@@ -4,18 +4,18 @@ version = 4
 
 [[package]]
 name = "sentinel-api"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "sentinel-detect",
 ]
 
 [[package]]
 name = "sentinel-capture"
-version = "0.1.1"
+version = "0.1.0"
 
 [[package]]
 name = "sentinel-core"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "sentinel-api",
  "sentinel-capture",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "sentinel-detect"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "sentinel-capture",
  "sentinel-ffi",
@@ -32,4 +32,4 @@ dependencies = [
 
 [[package]]
 name = "sentinel-ffi"
-version = "0.1.1"
+version = "0.1.0"
