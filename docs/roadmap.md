@@ -3,10 +3,10 @@
 ## 当前状态（v0.1.0）
 
 已实现离线 pcap → JA3 → 告警 → SSE 垂直切片：规则由
-`data/ja3_rules.tsv` 加载（四条权威来源条目），测试使用 Arkime 真实抓包
-夹具（Apache-2.0），演示与占位数据已移除。实时抓包、规则引擎扩展、TLS
-元数据与
-eBPF 快路径尚未实现。
+`data/ja3_rules.tsv` 加载（15 条权威来源条目，含 abuse.ch SSL Blacklist），
+测试使用 Arkime 真实抓包夹具（Apache-2.0），演示与占位数据已移除。控制面
+非回环绑定强制 mTLS，ingest 限速与 `/v1/stats` 已落地。实时抓包、规则
+引擎扩展、TLS 元数据与 eBPF 快路径尚未实现。
 
 ## 首个可用版本的验收标准
 

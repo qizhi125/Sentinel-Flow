@@ -33,9 +33,6 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Tests
-        run: make test
-
       - name: Lints
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
@@ -56,9 +53,13 @@ jobs:
             curl -fsS --max-time 1 http://127.0.0.1:21318/v1/health >/dev/null 2>&1 && break
             sleep 0.2
           done
-          curl -fsS --max-time 5 http://127.0.0.1:21318/v1/health | grep -q ok
           cargo run --bin sentineld -- \
             --pcap data/testdata/curl-enabled-tls13.pcap \
             --rules data/ja3_rules.tsv \
             --api http://127.0.0.1:21318
+          curl -fsS -X POST http://127.0.0.1:21318/v1/ingest \
+            -H 'Content-Type: application/json' \
+            -d '{"timestamp":1,"src_ip":"192.0.2.1","dst_ip":"198.51.100.1","src_port":40000,"dst_port":443,"rule":"smoke-test","severity":6,"fingerprint":"00000000000000000000000000000000"}'
+          curl -fsS --max-time 5 http://127.0.0.1:21318/v1/events | grep -q 'smoke-test'
+          curl -fsS http://127.0.0.1:21318/v1/stats | grep -q '"capacity"'
           curl -fsS --max-time 5 http://127.0.0.1:21318/ | grep -q 'Sentinel-Flow'

@@ -23,6 +23,7 @@ type Ring struct {
 	size    int
 	subs    map[uint64]chan Alert
 	nextSub uint64
+	dropped uint64
 }
 
 func New(capacity int) *Ring {
@@ -42,6 +43,7 @@ func (r *Ring) Add(a Alert) {
 	if r.size == len(r.buf) {
 		r.buf[r.head] = a
 		r.head = (r.head + 1) % len(r.buf)
+		r.dropped++
 	} else {
 		r.buf[(r.head+r.size)%len(r.buf)] = a
 		r.size++
@@ -52,6 +54,20 @@ func (r *Ring) Add(a Alert) {
 		default: // 慢订阅者丢弃本条告警，而不是阻塞 ingest
 		}
 	}
+}
+
+// RingStats 是环形缓冲的运行指标。
+type RingStats struct {
+	Capacity int    `json:"capacity"`
+	Size     int    `json:"size"`
+	Dropped  uint64 `json:"dropped"`
+}
+
+// Stats 返回容量、当前条数与满载时被覆盖的告警数。
+func (r *Ring) Stats() RingStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return RingStats{Capacity: len(r.buf), Size: r.size, Dropped: r.dropped}
 }
 
 // Snapshot 按时间顺序返回已存储的告警。

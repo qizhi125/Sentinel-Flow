@@ -4,3 +4,14 @@
 4d7a28d6f2263ed61de88ca66eb011e3	Emotet	8	https://github.com/salesforce/ja3 README（官方示例）
 51c64c77e60f3980eea90869b68c58a8	QakBot/QBot（共享指纹）	8	https://www.netresec.com/?page=Blog（2022-09-29）
 a0e9f5d64349fb13191bc781f81f42e1	多家族共享指纹（REvil/Lumma 等）	6	https://thedfirreport.com/2021/03/29/sodinokibi-aka-revil-ransomware/
+8916410db85077a5460817142dcbc8de	TrickBot	8	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2020-04-09）
+fc54e0d16d9764783542f0146a98b300	AsyncRAT	8	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2021-08-03）
+8515076cbbca9dce33151b798f782456	BitRAT	8	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2021-05-27）
+57f3642b4e37e28f5cbe3020c9331b4c	Gozi	8	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2018-11-14）
+c5235d3a8b9934b7fbbd204d50bc058d	Gootkit	7	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2019-02-20）
+d2935c58fe676744fecc8614ee5356c7	Adwind	7	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2019-02-14）
+fc2299d5b2964cd242c5a2c8c531a5f0	Tofsee	7	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2020-01-09）
+51a7ad14509fd614c7bb3a50c4982b8c	JBifrost	7	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2018-11-14）
+1712287800ac91b34cadd5884ce85568	TorrentLocker	8	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2018-11-14）
+1be3ecebe5aa9d3654e6e703d81f6928	Ransomware.Troldesh	8	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2019-02-22）
+40adfd923eb82b89d8836ba37a19bca1	CoinMiner	6	https://sslbl.abuse.ch/ja3-fingerprints/（列出 2020-01-09）

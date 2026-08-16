@@ -74,14 +74,25 @@ make test
 
 ## API 安全
 
-`/v1/ingest` 与 `/v1/events` 默认仅绑定回环地址。规划中：对外暴露必须配置
-鉴权或 mTLS；处理延迟超阈值或环形缓冲满载时触发背压，丢弃低优先级报文并
-记录速率限制审计日志。
+`/v1/ingest` 与 `/v1/events` 默认仅绑定回环地址。非回环绑定必须提供
+`--tls-cert/--tls-key/--client-ca` 启用 mTLS，否则拒绝启动。ingest 带速率
+限制，超限返回 429 并记录审计日志；环形缓冲满载时覆盖最旧告警，丢弃数与
+限速计数见 `/v1/stats`。按严重度丢弃低优先级报文的策略仍在规划中。
 
-## 测试
+## 冒烟测试
 
-仓库包含脱敏公开夹具，`make test` 完整覆盖核心链路；用例缺少必要夹具时判为
-失败，不做静默跳过。依赖私有抓包的扩展测试通过专门 Make 目标触发。
+仓库不保留测试文件，验证使用外部冒烟工具。启动控制面后可用 curl 检查：
+
+```bash
+curl -fsS http://127.0.0.1:21318/v1/health
+curl -fsS http://127.0.0.1:21318/v1/stats
+cargo run --bin sentineld -- \
+  --pcap data/testdata/curl-enabled-tls13.pcap \
+  --rules data/ja3_rules.tsv
+```
+
+界面冒烟用 Playwright MCP/CLI 打开 `http://127.0.0.1:21318`，核对页面与
+告警时间线。CI 的端到端冒烟步骤见 `.github/workflows/ci.yml`。
 
 ## 当前限制
 

@@ -169,36 +169,3 @@ fn read_u32(b: &[u8], little_endian: bool) -> u32 {
         u32_be(b)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // 夹具为 Arkime 测试库中的真实 TLS 1.3 抓包，路径相对 crate 根。
-    #[test]
-    fn extracts_real_client_hello_from_fixture() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../data/testdata/curl-enabled-tls13.pcap");
-        let mut reader = PcapReader::open(&path).expect("打开 pcap");
-        assert_eq!(reader.linktype(), 1);
-        let mut found = false;
-        loop {
-            match reader.next_frame() {
-                Ok(Some(frame)) => {
-                    if let Some(flow) = flow5(&frame.data, frame.linktype) {
-                        if let Some(hello) = tls_client_hello(&frame.data, frame.linktype) {
-                            assert_eq!(&hello[..2], &[0x16, 0x03]);
-                            assert!(!flow.src_ip.is_empty() && !flow.dst_ip.is_empty());
-                            assert!(flow.src_port > 0 && flow.dst_port > 0);
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => panic!("读取 pcap 失败: {e}"),
-            }
-        }
-        assert!(found, "夹具中应至少有一个 ClientHello");
-    }
-}

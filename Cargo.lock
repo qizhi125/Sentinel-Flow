@@ -33,6 +33,3 @@ dependencies = [
 [[package]]
 name = "sentinel-ffi"
 version = "0.1.0"
-dependencies = [
- "sentinel-capture",
-]

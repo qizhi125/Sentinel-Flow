@@ -8,15 +8,16 @@
 
 当前切片不依赖外部 crate 或 Go 模块；C++ 库由 `crates/ffi/build.rs` 编译。
 
-## 构建与测试
+## 构建
 
 ```bash
 make build
-make test
 ```
 
 `make build` 依次执行 `cargo build --workspace` 与 `go build`。C++ 以
 `-Wall -Wextra -Werror` 编译，任何告警或错误都会让整体构建失败。
+`cpp/CMakeLists.txt` 仅供 IDE 索引 C++ 代码，正式构建仍由
+`crates/ffi/build.rs` 驱动，两者编译参数保持一致。
 
 提交前检查：
 
@@ -30,10 +31,25 @@ go vet ./go/...
 ## 持续集成
 
 `.github/workflows/ci.yml` 在 push 到 `main`/`develop` 与 PR 时运行：构建
-（含 `build.rs` 驱动的 C++ 编译）、Rust/Go 测试、clippy 与 go vet、格式
-检查，以及控制面健康、数据面读取真实抓包与控制面首页的端到端冒烟。核心
-链路用随仓库分发的夹具完整验证。本地可用
-`make build && make test` 加上述命令复现同一套检查。
+（含 `build.rs` 驱动的 C++ 编译）、clippy 与 go vet、格式检查，以及端到端
+冒烟：数据面读取真实抓包、ingest → SSE 告警链路、`/v1/stats` 与控制面首页。
+仓库不保留测试文件，验证统一用外部冒烟工具完成。
+
+## 冒烟测试
+
+仓库内不写测试文件，验证走外部工具。curl 冒烟：
+
+```bash
+curl -fsS http://127.0.0.1:21318/v1/health
+curl -fsS http://127.0.0.1:21318/v1/stats
+curl -fsS -X POST http://127.0.0.1:21318/v1/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"timestamp":1,"src_ip":"192.0.2.1","dst_ip":"198.51.100.1","src_port":40000,"dst_port":443,"rule":"smoke-test","severity":6,"fingerprint":"00000000000000000000000000000000"}'
+curl -fsS --max-time 5 http://127.0.0.1:21318/v1/events
+```
+
+界面冒烟用 Playwright MCP/CLI 打开 `http://127.0.0.1:21318` 检查页面与
+告警时间线，产物放 `output/playwright/`（不提交 git）。
 
 ## 运行演示
 
@@ -80,7 +96,7 @@ stats/      # 本地统计与模拟脚本（不提交 git）
 - `data/ja3_rules.tsv`：制表符分隔 `指纹 名称 严重度 来源`，来源列必须注明
   权威出处；禁止编造指纹与占位条目；
 - `data/testdata/`：脱敏公开抓包夹具（Apache-2.0 来源，附许可声明），核心
-  测试的默认依赖；
+  冒烟验证的默认夹具；
 - 合成流量仅允许放在 `stats/sim/`（不提交 git），不得进入测试、规则表或
   产品路径。
 
@@ -93,6 +109,5 @@ stats/      # 本地统计与模拟脚本（不提交 git）
 - 端口策略（Fail-fast）：默认端口 21318，被占用时立即报致命错误并以非零
   状态码退出；禁止向外部进程发送 SIGTERM/SIGKILL，禁止自动绑定下一可用
   端口。端口变更只能通过 `--addr` 或配置文件显式指定。
-- 测试可复现：核心测试夹具随仓库分发，`make test` 完整覆盖核心链路；用例
-  缺少必要夹具必须判失败，禁止静默跳过。依赖私有抓包的扩展测试仅通过功能
-  标志或专门 Make 目标触发。
+- 不在仓库写测试文件：验证统一使用外部冒烟工具（curl、Playwright MCP/CLI、
+  CI 冒烟步骤）；仓库只保留冒烟所需的最小真实夹具。

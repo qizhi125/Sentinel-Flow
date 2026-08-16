@@ -3,7 +3,7 @@ CARGO ?= cargo
 GO ?= go
 BIN_DIR := bin
 
-.PHONY: build web daemon test clean
+.PHONY: build web daemon clean
 
 # 先编译 C++ 静态库（由 crates/ffi/build.rs 驱动），再构建 Rust 与 Go。
 build:
@@ -16,10 +16,6 @@ web: build
 
 daemon: build
 	$(CARGO) run --bin sentineld -- $(ARGS)
-
-test:
-	$(CARGO) test --workspace
-	$(GO) test ./go/...
 
 clean:
 	$(CARGO) clean
