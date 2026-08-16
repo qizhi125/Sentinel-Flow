@@ -1,0 +1,14 @@
+[package]
+name = "sentinel-core"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sentineld"
+path = "src/main.rs"
+
+[dependencies]
+sentinel-api = { path = "../api" }
+sentinel-capture = { path = "../capture" }
+sentinel-detect = { path = "../detect" }
+

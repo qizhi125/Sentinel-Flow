@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build & test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Build
+        run: make build
+
+      - name: Tests
+        run: make test
+
+      - name: Lints
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          go vet ./go/...
+
+      - name: Format checks
+        run: |
+          cargo fmt --all -- --check
+          test -z "$(gofmt -l go)"
+
+      - name: End-to-end smoke
+        run: |
+          go build -o /tmp/sentinel-web ./go/cmd/sentinel-web
+          /tmp/sentinel-web &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS --max-time 1 http://localhost:21318/ >/dev/null 2>&1 && break
+            sleep 0.2
+          done
+          cargo run --example gen_demo -- /tmp/sentinel-demo.pcap
+          cargo run --bin sentineld -- --pcap /tmp/sentinel-demo.pcap
+          curl -fsS --max-time 5 http://localhost:21318/v1/events \
+            | grep -q 'SyntheticDemo-Beacon'

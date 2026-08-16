@@ -1,0 +1,9 @@
+[package]
+name = "sentinel-detect"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sentinel-capture = { path = "../capture" }
+sentinel-ffi = { path = "../ffi" }
+

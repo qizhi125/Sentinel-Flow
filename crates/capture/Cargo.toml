@@ -1,0 +1,7 @@
+[package]
+name = "sentinel-capture"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+

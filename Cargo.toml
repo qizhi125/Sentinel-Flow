@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/capture",
+    "crates/detect",
+    "crates/ffi",
+    "crates/api",
+]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = true
+codegen-units = 1
+

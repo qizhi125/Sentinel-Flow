@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinel-Flow</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Sentinel-Flow</h1>
+    <span id="status" class="connecting">连接中…</span>
+  </header>
+  <main>
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>级别</th>
+          <th>来源 → 目的</th>
+          <th>规则</th>
+          <th>JA3</th>
+        </tr>
+      </thead>
+      <tbody id="events"></tbody>
+    </table>
+  </main>
+  <script>
+    const events = document.getElementById('events');
+    const status = document.getElementById('status');
+    const source = new EventSource('/v1/events');
+
+    source.onopen = () => {
+      status.textContent = '已连接';
+      status.className = 'ok';
+    };
+    source.onerror = () => {
+      status.textContent = '连接中断，正在重连…';
+      status.className = 'err';
+    };
+    source.onmessage = (event) => {
+      const alert = JSON.parse(event.data);
+      const row = document.createElement('tr');
+      row.className = alert.severity >= 8 ? 'crit' : alert.severity >= 7 ? 'high' : 'info';
+      const cells = [
+        new Date(alert.timestamp).toLocaleTimeString(),
+        severityLabel(alert.severity),
+        alert.src_ip + ':' + alert.src_port + ' → ' + alert.dst_ip + ':' + alert.dst_port,
+        alert.rule,
+        alert.fingerprint || '',
+      ];
+      for (const text of cells) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        row.appendChild(td);
+      }
+      events.prepend(row);
+      while (events.children.length > 500) {
+        events.lastElementChild.remove();
+      }
+    };
+
+    function severityLabel(severity) {
+      if (severity >= 8) return '高危';
+      if (severity >= 7) return '中危';
+      return '信息';
+    }
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,12 @@
+# 构建产物
+/target/
+/bin/
+
+# IDE 配置
+/.idea/
+
+# 旧项目归档（不提交 git）
+/.archive/
+
+# docs 下的本地临时目录（不提交 git）
+/docs/tmp/

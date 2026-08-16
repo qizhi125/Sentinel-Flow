@@ -1,0 +1,8 @@
+[package]
+name = "sentinel-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sentinel-detect = { path = "../detect" }
+
