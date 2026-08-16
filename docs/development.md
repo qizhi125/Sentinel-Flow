@@ -64,6 +64,13 @@ cargo run --bin sentineld -- \
 `make web` 会自动打开浏览器；无图形环境用 `./bin/sentinel-web --no-open`。
 上述夹具为真实良性流量，不会产生告警；命中规则的真实流量才会出现在时间线。
 
+实时抓包需要 root 或 CAP_NET_RAW，Ctrl-C 结束：
+
+```bash
+sudo setcap cap_net_raw+ep target/debug/sentineld   # 或直接以 root 运行
+cargo run --bin sentineld -- --interface eth0 --rules data/ja3_rules.tsv
+```
+
 ## 目录结构
 
 ```text

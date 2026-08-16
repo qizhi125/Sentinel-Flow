@@ -1,6 +1,8 @@
 //! 最小化的经典 pcap 读取器与 L2-L4 偏移解析，供第一条切片使用。
 //! 实时 AF_XDP 抓包在后续切片中替换本模块。
 
+pub mod live;
+
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::net::Ipv4Addr;
@@ -28,6 +30,8 @@ pub struct PcapReader {
     linktype: u32,
     snaplen: u32,
 }
+
+pub use live::LiveReader;
 
 impl PcapReader {
     // 打开经典 pcap 文件并解析 24 字节全局头。

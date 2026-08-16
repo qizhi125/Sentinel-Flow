@@ -8,6 +8,7 @@ JA3 指纹的 TLS 客户端检测。
 ## 功能
 
 - 读取经典 pcap（支持大小端、微秒/纳秒时间戳），解析 IPv4/TCP 五元组；
+- 实时抓包（Linux AF_PACKET，`--interface`，需要 root 或 CAP_NET_RAW）；
 - 提取 TLS ClientHello 并计算 JA3 指纹（C++20 实现，无外部依赖）；
 - 按 `data/ja3_rules.tsv` 规则表匹配已知恶意客户端指纹并生成告警；
 - Go 控制面通过 `/v1/ingest` 接收告警，环形缓冲保存最近 1000 条，
@@ -48,6 +49,12 @@ make web
 
 ```bash
 cargo run --bin sentineld -- --pcap <文件.pcap> --rules data/ja3_rules.tsv
+```
+
+实时抓包（需要 root 或 CAP_NET_RAW，Ctrl-C 结束）：
+
+```bash
+cargo run --bin sentineld -- --interface eth0 --rules data/ja3_rules.tsv
 ```
 
 本地运行测试（可选）：
@@ -97,8 +104,9 @@ cargo run --bin sentineld -- \
 ## 当前限制
 
 - 仅支持经典 pcap，不支持 pcapng；仅解析 IPv4/TCP；
+- 实时抓包为非混杂模式，仅捕获本机流量；
 - ClientHello 需位于单个 TCP 段内，尚未实现 TCP 重组；
-- 实时抓包与 eBPF 快路径尚未实现，见[路线图](docs/roadmap.md)。
+- eBPF 快路径尚未实现，见[路线图](docs/roadmap.md)。
 
 ## 文档
 

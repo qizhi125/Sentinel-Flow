@@ -26,7 +26,7 @@
 ## 当前数据流（v0.1.0 垂直切片）
 
 ```text
-离线 pcap → TCP 载荷 → TLS ClientHello → C++ JA3 → 指纹匹配
+离线 pcap / AF_PACKET 实时 → TCP 载荷 → TLS ClientHello → C++ JA3 → 指纹匹配
   → POST /v1/ingest → Go 环形缓冲（1000）→ SSE /v1/events → 浏览器时间线
 ```
 
